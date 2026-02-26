@@ -118,6 +118,7 @@ misc = [
 
     # Hardware SDKs
     "xarm-python-sdk>=1.17.0",
+    "portal",
 ]
 
 visualization = [
@@ -140,9 +141,6 @@ agents = [
     "openai",
     "openai-whisper",
     "sounddevice",
-
-    # MCP Server
-    "mcp>=1.0.0",
 ]
 
 web = [
@@ -360,11 +358,12 @@ module = [
     "pinocchio",
     "piper_sdk.*",
     "plotext",
-    "pydrake",
-    "pydrake.*",
     "plum.*",
+    "portal",
     "pycuda",
     "pycuda.*",
+    "pydrake",
+    "pydrake.*",
     "pyzed",
     "pyzed.*",
     "rclpy.*",
@@ -389,24 +388,11 @@ follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["dimos"]
-markers = [
-    "heavy: resource heavy test",
-    "tool: dev tooling",
-    "ros: depend on ros",
-    "lcm: tests that run actual LCM bus (can't execute in CI)",
-    "module: tests that need to run directly as modules",
-    "gpu: tests that require GPU",
-    "cuda: tests which require CUDA (specifically CUDA not just GPU acceleration)",
-    "e2e: end to end tests",
-    "integration: slower integration tests",
-    "neverending: they don't finish",
-    "mujoco: tests which open mujoco",
-]
 env = [
   "GOOGLE_MAPS_API_KEY=AIzafake_google_key",
   "PYTHONWARNINGS=ignore:cupyx.jit.rawkernel is experimental:FutureWarning",
 ]
-addopts = "-v -s -p no:warnings -ra --color=yes -m 'not (vis or exclude or tool or lcm or ros or heavy or gpu or module or e2e or integration or neverending or mujoco)'"
+addopts = "-v -r a -p no:warnings --color=yes -m 'not (tool or slow or mujoco)'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
