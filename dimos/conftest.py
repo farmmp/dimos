@@ -77,6 +77,7 @@ def pytest_configure(config):
         "self_hosted: tests that need the self-hosted runner (LFS, ROS, CUDA, etc.)",
     )
     config.addinivalue_line("markers", "mujoco: tests which open mujoco")
+    config.addinivalue_line("markers", "dimsim: tests which require dimsim")
     config.addinivalue_line("markers", "skipif_in_ci: skip when CI env var is set")
     config.addinivalue_line("markers", "skipif_no_openai: skip when OPENAI_API_KEY is not set")
     config.addinivalue_line("markers", "skipif_no_alibaba: skip when ALIBABA_API_KEY is not set")
