@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 import collections
 import inspect
 import math
+import time
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from dimos.memory2.utils.formatting import FilterRepr
@@ -133,6 +134,38 @@ def throttle(interval: float) -> FnIterTransformer[T, T]:
                 yield obs
 
     return FnIterTransformer(_throttle)
+
+
+def measure_time(out):
+    """Returns a transformer that records per-frame downstream cost into *out*."""
+
+    def _xf(upstream):
+        for obs in upstream:
+            start = time.perf_counter()
+            yield obs
+            out.append((time.perf_counter() - start) * 1000, ts=obs.ts)
+
+    return _xf
+
+
+def measure_gpu_mem(out, device: int = 0):
+    """Returns a transformer that records device-level GPU VRAM used (MB) per frame into *out*.
+
+    Reads ``torch.cuda.mem_get_info`` *after* each yield (and ``synchronize()``
+    so async kernels submitted by the downstream consumer have completed),
+    capturing memory used by every allocator on the device — Open3D, torch,
+    other processes — not just the current process.
+    """
+    import torch
+
+    def _xf(upstream):
+        for obs in upstream:
+            yield obs
+            torch.cuda.synchronize(device)
+            free, total = torch.cuda.mem_get_info(device)
+            out.append((total - free) / 1_000_000, ts=obs.ts)
+
+    return _xf
 
 
 def speed() -> FnIterTransformer[Any, float]:

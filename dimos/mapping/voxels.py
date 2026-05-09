@@ -142,6 +142,14 @@ class VoxelGrid:
 
         self._voxel_hashmap.activate(new_keys)
 
+        # Return Open3D's CUDA caching pool to the driver. The ops in this
+        # method (HashMap construction, ``key_tensor()[idx]``, ``find()``)
+        # allocate per-call device buffers; Open3D's caching allocator holds
+        # them in pool indefinitely once the Python wrappers are released.
+        # Without this call, VRAM grows ~0.8 MB/call until OOM.
+        if str(self._dev).startswith("CUDA"):
+            o3c.cuda.release_cache()
+
     @simple_mcache
     def get_global_pointcloud2(self) -> PointCloud2:
         self._check_disposed()
