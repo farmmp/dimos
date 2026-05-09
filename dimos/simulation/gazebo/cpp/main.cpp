@@ -274,6 +274,12 @@ int main(int argc, char** argv) {
                       << cli.arg("world") << std::endl;
             return 1;
         }
+        // Honor the --headless flag (default true). With Gazebo Ionic this
+        // tells the embedded Server's render setup to use surfaceless EGL
+        // rather than try to open a GLX window.
+        const std::string headless_arg = cli.arg("headless", "true");
+        const bool headless = headless_arg == "true" || headless_arg == "1";
+        sc.SetHeadlessRendering(headless);
         server = std::make_unique<gz::sim::Server>(sc);
         // _blocking=false runs simulation on a background thread.
         // _paused=false starts simulation immediately.

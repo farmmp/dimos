@@ -20,10 +20,10 @@ FetchContent_MakeAvailable(dimos_lcm)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LCM REQUIRED lcm)
 
-# gz-transport13 + gz-msgs10 + embedded gz-sim8
-find_package(gz-transport13 REQUIRED)
-find_package(gz-msgs10 REQUIRED)
-find_package(gz-sim8 REQUIRED)
+# gz-transport14 + gz-msgs11 + embedded gz-sim9 (Gazebo Ionic)
+find_package(gz-transport14 REQUIRED)
+find_package(gz-msgs11 REQUIRED)
+find_package(gz-sim9 REQUIRED)
 
 # Headers shared with hardware native modules (NativeModule arg parser, etc.)
 if(NOT DIMOS_COMMON_DIR)
@@ -40,9 +40,10 @@ target_include_directories(gazebo_native PRIVATE
 
 target_link_libraries(gazebo_native PRIVATE
   ${LCM_LIBRARIES}
-  gz-transport13::gz-transport13
-  gz-msgs10::gz-msgs10
-  gz-sim8::gz-sim8
+  gz-transport14::gz-transport14
+  gz-msgs11::gz-msgs11
+  gz-sim9::gz-sim9
+  sodium  # transitive via zeromq → libgz-transport14, but not exported by config
 )
 
 target_link_directories(gazebo_native PRIVATE
