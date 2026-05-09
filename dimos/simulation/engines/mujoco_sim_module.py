@@ -91,6 +91,13 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     pointcloud_fps: float = 5.0
     camera_info_fps: float = 1.0
 
+    # Optional secondary "environment" camera — RGB-only third-person view.
+    # Set env_camera_name to "" to disable.
+    env_camera_name: str = "env_camera"
+    env_width: int = 640
+    env_height: int = 480
+    env_fps: int = 15
+
 
 class MujocoSimModule(
     DepthCameraHardware,
@@ -111,6 +118,8 @@ class MujocoSimModule(
     pointcloud: Out[PointCloud2]
     camera_info: Out[CameraInfo]
     depth_camera_info: Out[CameraInfo]
+    # Secondary RGB-only env camera; published only if env_camera_name != "".
+    env_color_image: Out[Image]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -169,17 +178,27 @@ class MujocoSimModule(
         self._shm = ManipShmWriter(shm_key)
 
         # Build engine with SHM hooks installed.
+        cameras = [
+            CameraConfig(
+                name=self.config.camera_name,
+                width=self.config.width,
+                height=self.config.height,
+                fps=float(self.config.fps),
+            )
+        ]
+        if self.config.env_camera_name:
+            cameras.append(
+                CameraConfig(
+                    name=self.config.env_camera_name,
+                    width=self.config.env_width,
+                    height=self.config.env_height,
+                    fps=float(self.config.env_fps),
+                )
+            )
         self._engine = MujocoEngine(
             config_path=Path(self.config.address),
             headless=self.config.headless,
-            cameras=[
-                CameraConfig(
-                    name=self.config.camera_name,
-                    width=self.config.width,
-                    height=self.config.height,
-                    fps=float(self.config.fps),
-                )
-            ],
+            cameras=cameras,
             on_before_step=self._apply_shm_commands,
             on_after_step=self._publish_shm_state,
         )
@@ -351,7 +370,9 @@ class MujocoSimModule(
 
         interval = 1.0 / self.config.fps
         last_timestamp = 0.0
+        last_env_timestamp = 0.0
         published_count = 0
+        env_name = self.config.env_camera_name or None
 
         # Wait for engine to actually be connected (sim thread may take a tick).
         deadline = time.monotonic() + 30.0
@@ -400,6 +421,24 @@ class MujocoSimModule(
                 self.depth_image.publish(depth_img)
 
             self._publish_tf(ts, frame)
+
+            # Optional env camera — best-effort pull; skip silently if not
+            # rendered yet or not present in MJCF.
+            if env_name is not None:
+                try:
+                    env_frame = engine.read_camera(env_name)
+                except RuntimeError:
+                    env_frame = None
+                if env_frame is not None and env_frame.timestamp > last_env_timestamp:
+                    last_env_timestamp = env_frame.timestamp
+                    self.env_color_image.publish(
+                        Image(
+                            data=env_frame.rgb,
+                            format=ImageFormat.RGB,
+                            frame_id=env_name,
+                            ts=ts,
+                        )
+                    )
 
             published_count += 1
             if published_count == 1:

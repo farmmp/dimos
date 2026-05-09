@@ -103,9 +103,10 @@ class QuestTeleopModule(Module):
     right_controller_output: Out[PoseStamped]
     buttons: Out[Buttons]
 
-    # Optional image input — if connected (e.g. by a sim or RealSense module),
-    # frames are JPEG-encoded and served at /video for the Quest browser.
-    color_image: In[Image]
+    # Optional image inputs — each feed is JPEG-encoded and served at
+    # /video/<feed_name> (e.g. /video/wrist, /video/env) for the Quest browser.
+    color_image: In[Image]      # primary / eye-in-hand camera → /video/wrist
+    env_color_image: In[Image]  # third-person environment camera → /video/env
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -134,8 +135,8 @@ class QuestTeleopModule(Module):
             LCMJoy._get_packed_fingerprint(): self._on_joy_bytes,
         }
 
-        # Latest JPEG-encoded camera frame, served by /video.
-        self._latest_jpeg: bytes | None = None
+        # Latest JPEG-encoded camera frame per feed, served by /video/<name>.
+        self._latest_jpegs: dict[str, bytes] = {}
         self._image_lock = threading.Lock()
 
         self._setup_routes()
@@ -171,27 +172,33 @@ class QuestTeleopModule(Module):
             except Exception:
                 logger.exception("WebSocket error")
 
-        @self._web_server.app.get("/video")
-        async def video_feed() -> StreamingResponse:
+        @self._web_server.app.get("/feeds")
+        async def feeds() -> dict[str, list[str]]:
+            with self._image_lock:
+                names = sorted(self._latest_jpegs.keys())
+            return {"feeds": names}
+
+        @self._web_server.app.get("/video/{feed}")
+        async def video_feed(feed: str) -> StreamingResponse:
             return StreamingResponse(
-                self._mjpeg_stream(),
+                self._mjpeg_stream(feed),
                 media_type="multipart/x-mixed-replace; boundary=frame",
             )
 
-        @self._web_server.app.get("/snapshot")
-        async def snapshot() -> Response:
+        @self._web_server.app.get("/snapshot/{feed}")
+        async def snapshot(feed: str) -> Response:
             with self._image_lock:
-                jpeg = self._latest_jpeg
+                jpeg = self._latest_jpegs.get(feed)
             if jpeg is None:
                 return Response(status_code=204)
             return Response(content=jpeg, media_type="image/jpeg")
 
-    async def _mjpeg_stream(self) -> AsyncIterator[bytes]:
-        """Yield multipart MJPEG frames at video_fps from the latest JPEG cache."""
+    async def _mjpeg_stream(self, feed: str) -> AsyncIterator[bytes]:
+        """Yield multipart MJPEG frames at video_fps from the named feed cache."""
         period = 1.0 / max(1.0, self.config.video_fps)
         while True:
             with self._image_lock:
-                jpeg = self._latest_jpeg
+                jpeg = self._latest_jpegs.get(feed)
             if jpeg is not None:
                 yield (
                     b"--frame\r\n"
@@ -201,8 +208,8 @@ class QuestTeleopModule(Module):
                 )
             await asyncio.sleep(period)
 
-    def _on_image(self, msg: Image) -> None:
-        """Encode incoming Image to JPEG and cache for /video."""
+    def _on_image(self, feed: str, msg: Image) -> None:
+        """Encode incoming Image to JPEG and cache under the given feed name."""
         try:
             bgr = msg.to_opencv()
             ok, buf = cv2.imencode(
@@ -211,21 +218,28 @@ class QuestTeleopModule(Module):
             if not ok:
                 return
             with self._image_lock:
-                self._latest_jpeg = buf.tobytes()
+                self._latest_jpegs[feed] = buf.tobytes()
         except Exception:
-            logger.exception("Failed to encode camera frame")
+            logger.exception("Failed to encode camera frame", feed=feed)
 
     @rpc
     def start(self) -> None:
         super().start()
         self._start_server()
         self._start_control_loop()
-        # Optional: subscribe to camera feed if connected by the blueprint.
-        try:
-            self.color_image.subscribe(self._on_image)
-            logger.info("Quest teleop: camera feed subscribed → /video")
-        except Exception:
-            logger.info("Quest teleop: no camera connected, /video will be empty")
+        # Optional: subscribe each camera feed if connected by the blueprint.
+        # Map: <feed name in URL> → <In port>. Each feed is served at
+        # /video/<name>.
+        feeds: dict[str, In[Image]] = {
+            "wrist": self.color_image,
+            "env": self.env_color_image,
+        }
+        for name, port in feeds.items():
+            try:
+                port.subscribe(lambda msg, n=name: self._on_image(n, msg))
+                logger.info(f"Quest teleop: camera feed subscribed → /video/{name}")
+            except Exception:
+                logger.info(f"Quest teleop: no camera on '{name}', /video/{name} will be empty")
         logger.info("Quest Teleoperation Module started")
 
     @rpc

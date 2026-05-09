@@ -70,6 +70,7 @@ teleop_quest_xarm7_sim = autoconnect(
         ),
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
         ("color_image", Image): LCMTransport("/teleop/color_image", Image),
+        ("env_color_image", Image): LCMTransport("/teleop/env_color_image", Image),
     }
 )
 
