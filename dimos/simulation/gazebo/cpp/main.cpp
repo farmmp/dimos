@@ -280,17 +280,38 @@ int main(int argc, char** argv) {
         const std::string headless_arg = cli.arg("headless", "true");
         const bool headless = headless_arg == "true" || headless_arg == "1";
         sc.SetHeadlessRendering(headless);
-        server = std::make_unique<gz::sim::Server>(sc);
-        // _blocking=false runs simulation on a background thread.
-        // _paused=false starts simulation immediately.
-        if (!server->Run(false /*blocking*/, 0 /*iterations=infinite*/, false /*paused*/)) {
-            std::cerr << "[gazebo_native] server Run() returned false" << std::endl;
-            return 1;
+
+        // Wrap Server construction + Run in try/catch so a render-engine
+        // init failure (e.g. no usable EGL display, no DRM device the
+        // backend can drive) doesn't take down the whole bridge — the
+        // physics + odometry side still works, only the rendered sensors
+        // go silent. Bridge consumers that only need cmd_vel / odometry
+        // can keep working in degraded mode.
+        try {
+            server = std::make_unique<gz::sim::Server>(sc);
+            // _blocking=false runs simulation on a background thread.
+            // _paused=false starts simulation immediately.
+            if (!server->Run(false /*blocking*/, 0 /*iterations=infinite*/, false /*paused*/)) {
+                std::cerr << "[gazebo_native] WARNING: server Run() returned false; "
+                             "continuing in LCM-only mode (no sim)" << std::endl;
+                server.reset();
+            } else {
+                std::cerr << "[gazebo_native] embedded gz::sim::Server started on "
+                          << cli.arg("world") << std::endl;
+                // Let publishers get up.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[gazebo_native] WARNING: gz::sim::Server threw: "
+                      << e.what() << "; continuing in LCM-only mode (no sim)"
+                      << std::endl;
+            server.reset();
+        } catch (...) {
+            std::cerr << "[gazebo_native] WARNING: gz::sim::Server threw "
+                         "unknown exception; continuing in LCM-only mode (no sim)"
+                      << std::endl;
+            server.reset();
         }
-        std::cerr << "[gazebo_native] embedded gz::sim::Server started on "
-                  << cli.arg("world") << std::endl;
-        // Let publishers get up.
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     }
 
     lcm::LCM bus;
@@ -316,22 +337,38 @@ int main(int argc, char** argv) {
                   << " → LCM " << ch_odometry << " (ok=" << ok << ")" << std::endl;
     }
     if (!ch_pointcloud.empty()) {
-        node.Subscribe<gz::msgs::PointCloudPacked>(gz_lidar,
+        bool ok = node.Subscribe<gz::msgs::PointCloudPacked>(gz_lidar,
             [&bus, ch_pointcloud, frame_id](const gz::msgs::PointCloudPacked& m) {
+                static std::atomic<int> n{0};
+                if (n.fetch_add(1) < 3) {
+                    std::cerr << "[gazebo_native] gz pointcloud #" << n.load()
+                              << " → LCM " << ch_pointcloud << std::endl;
+                }
                 on_gz_pointcloud(m, bus, ch_pointcloud, frame_id);
             });
+        std::cerr << "[gazebo_native] subscribed to " << gz_lidar
+                  << " → LCM " << ch_pointcloud << " (ok=" << ok << ")" << std::endl;
     }
     if (!ch_image.empty()) {
-        node.Subscribe<gz::msgs::Image>(gz_camera,
+        bool ok = node.Subscribe<gz::msgs::Image>(gz_camera,
             [&bus, ch_image, frame_id](const gz::msgs::Image& m) {
+                static std::atomic<int> n{0};
+                if (n.fetch_add(1) < 3) {
+                    std::cerr << "[gazebo_native] gz img #" << n.load()
+                              << " → LCM " << ch_image << std::endl;
+                }
                 on_gz_image(m, bus, ch_image, frame_id);
             });
+        std::cerr << "[gazebo_native] subscribed to " << gz_camera
+                  << " → LCM " << ch_image << " (ok=" << ok << ")" << std::endl;
     }
     if (!ch_caminfo.empty()) {
-        node.Subscribe<gz::msgs::CameraInfo>(gz_caminfo,
+        bool ok = node.Subscribe<gz::msgs::CameraInfo>(gz_caminfo,
             [&bus, ch_caminfo, frame_id](const gz::msgs::CameraInfo& m) {
                 on_gz_caminfo(m, bus, ch_caminfo, frame_id);
             });
+        std::cerr << "[gazebo_native] subscribed to " << gz_caminfo
+                  << " → LCM " << ch_caminfo << " (ok=" << ok << ")" << std::endl;
     }
 
     // LCM cmd_vel → gz

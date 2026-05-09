@@ -77,6 +77,11 @@
             rev = "v2.3.3";
             hash = "sha256-elSj35LwsLzj1ssDPsk9NW/KSXfiOGYmw9hQSAWdpFM=";
           };
+          # Patch: when DRM-device EGL init fails, fall back to mesa's
+          # surfaceless platform (no DRM device required). Critical on
+          # boxes whose only DRM node is one mesa can't drive (Nvidia
+          # desktops, Vulkan-only GPUs, etc.).
+          patches = [ ./patches/ogre-next-egl-surfaceless-fallback.patch ];
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [
             pkgs.freetype pkgs.freeimage pkgs.zlib pkgs.libGL pkgs.libGLU

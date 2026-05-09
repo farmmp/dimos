@@ -1,0 +1,67 @@
+From: dimos
+Date: 2026-05-09
+Subject: [PATCH] EglPBufferSupport: fall back to mesa surfaceless when DRM init fails
+
+OGRE-Next 2.3's EGL_HEADLESS path enumerates physical DRM devices via
+eglQueryDevicesEXT and tries eglGetPlatformDisplay(EGL_PLATFORM_DEVICE_EXT)
+on each. On systems where the only DRM device is one mesa cannot drive
+(e.g. Nvidia desktops without nouveau, or any box with a single GPU
+mesa rejects), this fails with "Not allowed to force software rendering
+when API explicitly selects a hardware device" and headless rendering
+is impossible.
+
+mesa exposes a vendor-neutral surfaceless platform via
+EGL_MESA_platform_surfaceless (eglGetPlatformDisplay with
+EGL_PLATFORM_SURFACELESS_MESA = 0x31DD) which doesn't require any DRM
+device — it uses llvmpipe / swrast directly. Fall back to it when the
+DRM-device path fails.
+
+--- a/RenderSystems/GL3Plus/src/windowing/EGL/PBuffer/OgreEglPBufferSupport.cpp
++++ b/RenderSystems/GL3Plus/src/windowing/EGL/PBuffer/OgreEglPBufferSupport.cpp
+@@ -304,21 +304,33 @@ namespace Ogre
+         deviceData.eglDisplay =
+             eglGetPlatformDisplay( EGL_PLATFORM_DEVICE_EXT, mDevices[deviceIdx], attribs );
+
+-        EGL_CHECK_ERROR
+-
+-        if( deviceData.eglDisplay == EGL_NO_DISPLAY )
+-        {
+-            OGRE_EXCEPT( Exception::ERR_RENDERINGAPI_ERROR,
+-                         "eglGetPlatformDisplay failed for device " + deviceData.name,
+-                         "EGLSupport::getGLDisplay" );
+-        }
+-
+         EGLint major = 0, minor = 0;
+-        if( eglInitialize( deviceData.eglDisplay, &major, &minor ) == EGL_FALSE )
++        const bool deviceInit =
++            ( deviceData.eglDisplay != EGL_NO_DISPLAY ) &&
++            ( eglInitialize( deviceData.eglDisplay, &major, &minor ) == EGL_TRUE );
++
++        if( !deviceInit )
+         {
+-            OGRE_EXCEPT( Exception::ERR_RENDERINGAPI_ERROR,
+-                         "eglInitialize failed for device " + deviceData.name,
+-                         "EGLSupport::getGLDisplay" );
++            // Fall back to mesa's surfaceless platform — no DRM device
++            // required, uses llvmpipe / swrast. This is the path that
++            // works on systems where the only enumerated DRM device is
++            // one mesa can't drive (e.g. Nvidia-only desktops).
++            const EGLint kEGL_PLATFORM_SURFACELESS_MESA = 0x31DD;
++            LogManager::getSingleton().logMessage(
++                "Device init failed for " + deviceData.name +
++                ", trying EGL_PLATFORM_SURFACELESS_MESA fallback" );
++            deviceData.eglDisplay = eglGetPlatformDisplay(
++                kEGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, attribs );
++            if( deviceData.eglDisplay == EGL_NO_DISPLAY ||
++                eglInitialize( deviceData.eglDisplay, &major, &minor ) == EGL_FALSE )
++            {
++                OGRE_EXCEPT(
++                    Exception::ERR_RENDERINGAPI_ERROR,
++                    "eglInitialize failed for device " + deviceData.name +
++                        " AND EGL_PLATFORM_SURFACELESS_MESA fallback also failed; "
++                        "no usable EGL display",
++                    "EGLSupport::getGLDisplay" );
++            }
+         }
+
+         EGL_CHECK_ERROR

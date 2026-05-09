@@ -170,9 +170,10 @@ class TestLiveGazebo:
             cwd=None,
             build_command=None,           # already built
             headless=True,
-            # Minimal world (no rendering) so the test doesn't depend on the
-            # Ogre engine plugin being built.
-            world=str(_PKG / "worlds" / "dimos_bot_minimal.sdf"),
+            # Full sensor world — uses gz-rendering 9 ogre2 engine via
+            # OGRE-Next 2.3 with EGL surfaceless. Cameras + lidar render
+            # via mesa swrast/llvmpipe; no DISPLAY / X server required.
+            world=str(_PKG / "worlds" / "dimos_bot.sdf"),
         )
         transports_to_stop: list = []
         try:
@@ -190,20 +191,19 @@ class TestLiveGazebo:
                 getattr(mod, name).transport = t
                 transports_to_stop.append(t)
 
-            # Counter incremented via a subscriber on the odometry port.
-            # The minimal world doesn't include rendering, so only odometry
-            # is asserted here. The full I/O contract is verified in the
-            # unit tests above.
-            counts = {"odometry": 0}
+            # Counters incremented via subscribers on the OUT ports.
+            counts = {"odometry": 0, "registered_scan": 0, "color_image": 0}
 
             def _bump(name: str):
                 def cb(_msg) -> None:
                     counts[name] += 1
                 return cb
 
-            # Subscribe via the LCM transport directly — `mod.odometry.subscribe`
+            # Subscribe via the LCM transport directly — `mod.<port>.subscribe`
             # only chains a Stream callback, but the bridge publishes via LCM.
             mod.odometry.transport.subscribe(_bump("odometry"))
+            mod.registered_scan.transport.subscribe(_bump("registered_scan"))
+            mod.color_image.transport.subscribe(_bump("color_image"))
 
             # Snapshot the transports we created so we can stop them cleanly.
             transports_to_stop.extend(
@@ -225,10 +225,12 @@ class TestLiveGazebo:
                       angular=Vector3(x=0.0, y=0.0, z=0.0)),
             )
 
-            # Wait up to 20s for at least one odometry message.
-            deadline = time.time() + 20.0
+            # Wait up to 60s for at least one of each stream.
+            # Software-rendered EGL is slow on first paint; cameras /
+            # lidar take longer than odometry to start ticking.
+            deadline = time.time() + 60.0
             while time.time() < deadline:
-                if counts["odometry"] > 0:
+                if all(c > 0 for c in counts.values()):
                     break
                 time.sleep(0.5)
 
@@ -248,4 +250,12 @@ class TestLiveGazebo:
         assert counts["odometry"] > 0, (
             "no odometry messages received — bridge did not relay gz-sim's "
             "odometry to LCM (round trip cmd_vel→sim→odom→bridge→LCM broken)"
+        )
+        assert counts["registered_scan"] > 0, (
+            "no lidar PointCloud2 messages — gpu_lidar sensor isn't producing "
+            "frames headlessly. Check OGRE-Next EGL surfaceless setup."
+        )
+        assert counts["color_image"] > 0, (
+            "no color image messages — RGB camera sensor isn't producing "
+            "frames headlessly. Check OGRE-Next EGL surfaceless setup."
         )
