@@ -180,18 +180,20 @@ rerun_config = {
     },
 }
 
-# Skip rerun/foxglove bridges in headless mode (CI, e2e tests). Without this,
-# RerunBridgeModule fails to find the viewer binary in PATH and errors at start.
-_headless = os.environ.get("DIMSIM_HEADLESS", "").strip() in ("1", "true")
+# Skip rerun/foxglove bridges only in CI — the viewer binary isn't on PATH on
+# the runner and RerunBridgeModule errors at start otherwise. A developer
+# running headless locally (DIMSIM_HEADLESS=1) usually has rerun installed and
+# wants the viewer open on the host even though the DimSim browser is headless.
+_skip_viewer = bool(os.environ.get("CI"))
 
-if not _headless and global_config.viewer == "foxglove":
+if not _skip_viewer and global_config.viewer == "foxglove":
     from dimos.robot.foxglove_bridge import FoxgloveBridge
 
     with_vis = autoconnect(
         _transports_base,
         FoxgloveBridge.blueprint(shm_channels=["/color_image#sensor_msgs.Image"]),
     )
-elif not _headless and global_config.viewer.startswith("rerun"):
+elif not _skip_viewer and global_config.viewer.startswith("rerun"):
     from dimos.visualization.rerun.bridge import RerunBridgeModule
 
     with_vis = autoconnect(

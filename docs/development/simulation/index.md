@@ -3,7 +3,9 @@
 DimSim is a browser-based 3D simulator that provides the same sensor and control interface as physical robots. When you run any `sim-*` blueprint, dimos automatically downloads and launches DimSim — no manual setup or external dependencies required.
 
 **Sub-pages:**
+
 - [Scene Editing SDK](/docs/development/simulation/scene_editing.md) — Load custom scenes, swap embodiments, add objects at runtime
+- [Creating Scenes from Scratch](/docs/development/simulation/creating_scenes.md) — Author empty scenes programmatically, save as JSON, hot reload
 - [Viewing & Navigation](/docs/development/simulation/viewing.md) — Browser controls, god view, keyboard shortcuts
 - [Evals](/docs/development/simulation/evals.md) — Running, creating, and rubric types *(in progress)*
 
@@ -24,15 +26,17 @@ This opens a browser tab with the 3D environment. The robot is controlled via th
 
 ## Blueprints
 
-| Blueprint | What it includes |
-|-----------|-----------------|
-| `sim-basic` | Sensor bridge + TF + visualization |
-| `sim-nav` | + voxel mapper, costmap, A* planner, frontier explorer |
-| `sim-spatial` | + spatial memory |
-| `sim-agentic` | + VLM agent, navigation/speak/follow skills, web input |
-| `sim-eval` | Agentic + temporal memory, for running eval workflows |
-| `sim-parallel-eval` | Headless parallel eval (3 concurrent instances) |
-| `sim-temporal-memory` | Full agentic stack with temporal memory |
+
+| Blueprint             | What it includes                                       |
+| --------------------- | ------------------------------------------------------ |
+| `sim-basic`           | Sensor bridge + TF + visualization                     |
+| `sim-nav`             | + voxel mapper, costmap, A* planner, frontier explorer |
+| `sim-spatial`         | + spatial memory                                       |
+| `sim-agentic`         | + VLM agent, navigation/speak/follow skills, web input |
+| `sim-eval`            | Agentic + temporal memory, for running eval workflows  |
+| `sim-parallel-eval`   | Headless parallel eval (3 concurrent instances)        |
+| `sim-temporal-memory` | Full agentic stack with temporal memory                |
+
 
 Each blueprint builds on the previous one. Pick the one that matches the modules you need.
 
@@ -40,14 +44,16 @@ Each blueprint builds on the previous one. Pick the one that matches the modules
 
 DimSim publishes the same topics as physical robots:
 
-| Topic | Message Type | Rate | Notes |
-|-------|-------------|------|-------|
-| `/odom` | `PoseStamped` | 50 Hz | Robot pose in world frame (server-side) |
-| `/color_image` | `Image` | 5 Hz | JPEG, 960x432 |
-| `/depth_image` | `Image` | 5 Hz | 16-bit depth (toggleable via `DIMSIM_DISABLE_DEPTH=1`) |
-| `/lidar` | `PointCloud2` | 10 Hz | 15K-point simulated LiDAR (server-side raycast) |
-| `/camera_info` | `CameraInfo` | 1 Hz | Camera intrinsics |
-| `/cmd_vel` | `Twist` | — | Velocity commands (input) |
+
+| Topic          | Message Type  | Rate  | Notes                                                  |
+| -------------- | ------------- | ----- | ------------------------------------------------------ |
+| `/odom`        | `PoseStamped` | 50 Hz | Robot pose in world frame (server-side)                |
+| `/color_image` | `Image`       | 5 Hz  | JPEG, 960x432                                          |
+| `/depth_image` | `Image`       | 5 Hz  | 16-bit depth (toggleable via `DIMSIM_DISABLE_DEPTH=1`) |
+| `/lidar`       | `PointCloud2` | 10 Hz | 15K-point simulated LiDAR (server-side raycast)        |
+| `/camera_info` | `CameraInfo`  | 1 Hz  | Camera intrinsics                                      |
+| `/cmd_vel`     | `Twist`       | —     | Velocity commands (input)                              |
+
 
 Transform tree: `world -> base_link -> {camera_link -> camera_optical, lidar_link}`.
 
@@ -79,21 +85,30 @@ DIMSIM_HEADLESS=1 dimos --simulation run sim-basic
 
 Headless mode defaults to cpu usage. If gpu is available run with `DIMSIM_RENDER=gpu`.
 
+The bridge still serves the DimSim frontend on port 8090 even in headless
+mode — open [http://localhost:8090](http://localhost:8090) in any browser to attach a viewer tab to
+a running headless instance (read-only by default; you can drive the scene
+editor from the same page). Useful for poking at a long-running CI-style
+session without restarting it.
+
 ## Evals
 
 See [Evals](/docs/development/simulation/evals.md) — running, creating, and rubric types. *(in progress)*
 
 ## Environment Variables
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `DIMSIM_SCENE` | Pre-made Scene to load (`apt`, `empty`, etc.) | `apt` |
-| `DIMSIM_HEADLESS` | Run headless (no browser window) | unset |
-| `DIMSIM_RENDER` | Headless rendering: `gpu` or `cpu` | `cpu` |
-| `DIMSIM_LOCAL` | Use local DimSim repo instead of binary | unset |
-| `DIMSIM_DISABLE_DEPTH` | Disable depth image publishing | unset |
-| `DIMSIM_IMAGE_RATE` | Image publish interval in ms | `200` (5 Hz) |
-| `DIMSIM_CAMERA_FOV` | Vertical camera FOV in degrees | `46` (Go2) |
-| `DIMSIM_CHANNELS` | Number of parallel browser pages | unset |
-| `DIMSIM_CONNECT_ONLY` | Skip launch, connect to existing server | unset |
-| `DIMSIM_EVAL_LOG_DIR` | Directory for eval subprocess logs | unset |
+
+| Variable               | Purpose                                       | Default      |
+| ---------------------- | --------------------------------------------- | ------------ |
+| `DIMSIM_SCENE`         | Pre-made Scene to load (`apt`, `empty`, etc.) | `apt`        |
+| `DIMSIM_HEADLESS`      | Run headless (no browser window)              | unset        |
+| `DIMSIM_RENDER`        | Headless rendering: `gpu` or `cpu`            | `cpu`        |
+| `DIMSIM_LOCAL`         | Use local DimSim repo instead of binary       | unset        |
+| `DIMSIM_DISABLE_DEPTH` | Disable depth image publishing                | unset        |
+| `DIMSIM_IMAGE_RATE`    | Image publish interval in ms                  | `200` (5 Hz) |
+| `DIMSIM_CAMERA_FOV`    | Vertical camera FOV in degrees                | `46` (Go2)   |
+| `DIMSIM_CHANNELS`      | Number of parallel browser pages              | unset        |
+| `DIMSIM_CONNECT_ONLY`  | Skip launch, connect to existing server       | unset        |
+| `DIMSIM_EVAL_LOG_DIR`  | Directory for eval subprocess logs            | unset        |
+
+

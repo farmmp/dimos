@@ -1,30 +1,8 @@
 # Scene Editing SDK
+
 ** Status: In Progress — Eval creation workflow and additional rubric types are under active development.
 
 Python SDK for runtime 3D scene manipulation in DimSim. SceneClient connects to a running DimSim bridge server via WebSocket and provides high-level methods for loading scenes, managing objects, configuring sensors, and swapping robot embodiments.
-
-## Architecture
-
-```
-Python (SceneClient)                    Deno Bridge Server                  Browser (Three.js)
-─────────────────────                   ──────────────────                  ──────────────────
-                                              :8090
-scene.load_map(url)  ───WS text───►  relay to browser  ───WS text───►  SceneEditor._execCode()
-scene.set_embodiment()  ──────────►  store + reconfigure  ──────────►  DimosBridge._handleEmbodimentConfig()
-                                     ServerPhysics                      avatar model swap
-                                     ServerLidar
-
-scene.set_agent_position()  ──────►  ServerPhysics.setPosition()  ────►  pose broadcast (visual sync)
-
-Sensor data flows back:
-                                     ServerPhysics (50Hz odom)  ──LCM──►  dimos Python
-                           ◄──LCM──  ServerLidar (10Hz raycasts)
-Browser captures:
-  color_image (5Hz)  ───WS binary──►  LCM relay  ───LCM multicast──►  dimos Python
-  depth_image (5Hz)  ───WS binary──►  LCM relay  ───LCM multicast──►  dimos Python
-```
-
-SceneClient uses a **separate WebSocket** (`?ch=control`) from the LCM sensor data path. It sends JSON text commands; the bridge relays them to the browser where `SceneEditor` executes them in a sandboxed `AsyncFunction` context.
 
 ## Quick Start
 
@@ -63,35 +41,43 @@ scene.close()
 
 ### Scene Management
 
-| Method | Description |
-|---|---|
-| `load_map(url, position, scale, collider, name, auto_scale)` | Load GLB scene with trimesh colliders. Auto-scales cm to m by default. |
-| `clear_scene()` | Remove all user-added objects (preserves agent, camera, lights) |
-| `get_scene_info()` | List scene objects. Slow on large scenes (1000+ objects) — use `exec()` instead. |
+
+| Method                                                       | Description                                                                      |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `load_map(url, position, scale, collider, name, auto_scale)` | Load GLB scene with trimesh colliders. Auto-scales cm to m by default.           |
+| `clear_scene()`                                              | Remove all user-added objects (preserves agent, camera, lights)                  |
+| `get_scene_info()`                                           | List scene objects. Slow on large scenes (1000+ objects) — use `exec()` instead. |
+
 
 ### Objects
 
-| Method | Description |
-|---|---|
-| `add_object(geometry, size, color, position, name, dynamic, mass, restitution, collider)` | Add primitive: `"box"`, `"sphere"`, or `"cylinder"` |
-| `remove_object(name)` | Remove object by name, dispose geometry/materials |
-| `add_collider(name, shape)` | Add physics collider to existing object (`"trimesh"`, `"box"`, `"sphere"`) |
-| `remove_collider(name)` | Remove physics collider |
+
+| Method                                                                                    | Description                                                                |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `add_object(geometry, size, color, position, name, dynamic, mass, restitution, collider)` | Add primitive: `"box"`, `"sphere"`, or `"cylinder"`                        |
+| `remove_object(name)`                                                                     | Remove object by name, dispose geometry/materials                          |
+| `add_collider(name, shape)`                                                               | Add physics collider to existing object (`"trimesh"`, `"box"`, `"sphere"`) |
+| `remove_collider(name)`                                                                   | Remove physics collider                                                    |
+
 
 ### NPCs
 
-| Method | Description |
-|---|---|
+
+| Method                                                               | Description                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `add_npc(url, name, position, rotation, scale, animation, collider)` | Load animated GLTF character. Animation selected by name substring or index. |
-| `remove_npc(name)` | Remove NPC, stop animations, remove collider |
+| `remove_npc(name)`                                                   | Remove NPC, stop animations, remove collider                                 |
+
 
 ### Agent
 
-| Method | Description |
-|---|---|
-| `get_agent_position()` | Returns `{x, y, z}` in world frame |
-| `set_agent_position(x, y, z)` | Teleport agent via server physics |
+
+| Method                                | Description                                         |
+| ------------------------------------- | --------------------------------------------------- |
+| `get_agent_position()`                | Returns `{x, y, z}` in world frame                  |
+| `set_agent_position(x, y, z)`         | Teleport agent via server physics                   |
 | `set_embodiment(preset, **overrides)` | Change robot type, physics params, and avatar model |
+
 
 ### Custom Code
 
@@ -115,16 +101,18 @@ Top-level `await` is supported. Return value is serialized to JSON and sent back
 
 8 built-in presets covering common robot types:
 
-| Preset | Type | Key Parameters |
-|---|---|---|
-| `unitree-go2` | Quadruped (default) | radius=0.12, halfHeight=0.25, maxSpeed=3.0, gravity=-9.81 |
-| `quadruped` | Generic quadruped | Same as unitree-go2 |
-| `differential-drive` | Two-wheel robot | radius=0.15, maxSpeed=2.0, maxStepHeight=0.05 |
-| `ackermann` | Car-like steering | radius=0.3, maxSpeed=5.0, turnRate=1.2 |
-| `holonomic` | Omnidirectional | radius=0.2, maxSpeed=2.5, turnRate=4.0 |
-| `humanoid` | Biped | radius=0.2, halfHeight=0.8, lidarMount=1.6m |
-| `small-robot` | Compact ground robot | radius=0.08, maxSpeed=1.0 |
-| `drone` | 6DoF flight | gravity=0, maxAltitude=20m, maxSpeed=5.0 |
+
+| Preset               | Type                 | Key Parameters                                            |
+| -------------------- | -------------------- | --------------------------------------------------------- |
+| `unitree-go2`        | Quadruped (default)  | radius=0.12, halfHeight=0.25, maxSpeed=3.0, gravity=-9.81 |
+| `quadruped`          | Generic quadruped    | Same as unitree-go2                                       |
+| `differential-drive` | Two-wheel robot      | radius=0.15, maxSpeed=2.0, maxStepHeight=0.05             |
+| `ackermann`          | Car-like steering    | radius=0.3, maxSpeed=5.0, turnRate=1.2                    |
+| `holonomic`          | Omnidirectional      | radius=0.2, maxSpeed=2.5, turnRate=4.0                    |
+| `humanoid`           | Biped                | radius=0.2, halfHeight=0.8, lidarMount=1.6m               |
+| `small-robot`        | Compact ground robot | radius=0.08, maxSpeed=1.0                                 |
+| `drone`              | 6DoF flight          | gravity=0, maxAltitude=20m, maxSpeed=5.0                  |
+
 
 Override any parameter:
 
@@ -137,6 +125,7 @@ scene.set_embodiment("drone",
 ```
 
 When you change embodiment:
+
 - **Server physics** rebuilds the agent's colliders, changes gravity/speed params
 - **Server lidar** updates the mount offset
 - **Browser** swaps the avatar GLB model
@@ -181,12 +170,14 @@ Sensor config is launch-time only — not changeable at runtime via SceneClient.
 
 ### Default Rates
 
-| Sensor | Rate | Channel |
-|--------|------|---------|
-| Color image | 200ms (5 Hz) | `/color_image` |
-| Depth image | 500ms (2 Hz) | `/depth_image` |
-| LiDAR | 100ms (10 Hz) | `/lidar` |
-| Odom | 20ms (50 Hz) | `/odom` |
+
+| Sensor      | Rate          | Channel        |
+| ----------- | ------------- | -------------- |
+| Color image | 200ms (5 Hz)  | `/color_image` |
+| Depth image | 500ms (2 Hz)  | `/depth_image` |
+| LiDAR       | 100ms (10 Hz) | `/lidar`       |
+| Odom        | 20ms (50 Hz)  | `/odom`        |
+
 
 Depth is the only toggleable channel. Color and lidar are essential for navigation and perception.
 
@@ -239,38 +230,42 @@ Then build the scene programmatically. Use `clear_scene()` to reset.
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `DIMSIM_SCENE` | Scene to load (`apt`, `empty`) | `apt` |
-| `DIMSIM_LOCAL` | Use local DimSim repo instead of binary | unset |
-| `DIMSIM_HEADLESS` | Launch headless Chrome | unset |
-| `DIMSIM_RENDER` | Headless rendering: `gpu` or `cpu` | `cpu` |
-| `DIMSIM_IMAGE_RATE` | Image publish interval in ms | `200` (5 Hz) |
-| `DIMSIM_DISABLE_DEPTH` | Disable depth image publishing | unset |
-| `DIMSIM_CAMERA_FOV` | Vertical camera FOV in degrees | `46` (Go2) |
+
+| Variable               | Description                             | Default      |
+| ---------------------- | --------------------------------------- | ------------ |
+| `DIMSIM_SCENE`         | Scene to load (`apt`, `empty`)          | `apt`        |
+| `DIMSIM_LOCAL`         | Use local DimSim repo instead of binary | unset        |
+| `DIMSIM_HEADLESS`      | Launch headless Chrome                  | unset        |
+| `DIMSIM_RENDER`        | Headless rendering: `gpu` or `cpu`      | `cpu`        |
+| `DIMSIM_IMAGE_RATE`    | Image publish interval in ms            | `200` (5 Hz) |
+| `DIMSIM_DISABLE_DEPTH` | Disable depth image publishing          | unset        |
+| `DIMSIM_CAMERA_FOV`    | Vertical camera FOV in degrees          | `46` (Go2)   |
+
 
 ## Known Quirks
 
 - **GLTF 2.0+ required** — Older models fail silently. Check model version before loading.
 - **NPC Y positioning** — No auto-ground-snapping. Apt floor is ~Y=0.1. Use agent position as reference.
 - **CORS for remote URLs** — Browser blocks cross-origin GLBs. Use `/proxy?url=<encoded-url>`.
-- **`get_scene_info()` timeout** — Slow on 1000+ object scenes. Use targeted `exec()` queries.
+- `**get_scene_info()` timeout** — Slow on 1000+ object scenes. Use targeted `exec()` queries.
 - **Server restart for DimSim changes** — `DimSim/src/` needs `npm run build`. Bridge server needs restart. Python changes are immediate.
-- **`DIMSIM_LOCAL=1` for development** — Required when working with the local DimSim repo.
+- `**DIMSIM_LOCAL=1` for development** — Required when working with the local DimSim repo.
 
 ## Examples
 
 See `examples/scene_editing/`:
 
-| Script | Description |
-|---|---|
-| Example | Status | Description |
-|---|---|---|
-| `load_object.py` | Ready | Load a GLB object ([Avocado sample](https://github.com/KhronosGroup/glTF-Sample-Models/blob/main/2.0/Avocado/glTF/Avocado.gltf) by default) |
-| `load_custom_object.py` | Ready | Create objects from code (box, sphere with physics) |
-| `load_scene.py` | Template | Load a full GLB scene — update `GLB_PATH` to your file |
-| `remove_object.py` | Ready | Remove a named object |
-| `load_robot.py` | Ready | Swap robot embodiment (drone, Go2) |
+
+| Script                  | Description |
+| ----------------------- | ----------- |
+| Example                 | Status      |
+| ---                     | ---         |
+| `load_object.py`        | Ready       |
+| `load_custom_object.py` | Ready       |
+| `load_scene.py`         | Template    |
+| `remove_object.py`      | Ready       |
+| `load_robot.py`         | Ready       |
+
 
 Run any example while a sim is running:
 
@@ -302,3 +297,4 @@ pytest dimos/e2e_tests/test_scene_client.py -v -s -m slow
 # Scene editing integration tests (sensor rates, FOV, embodiment, auto-scale)
 pytest dimos/e2e_tests/test_scene_editing.py -v -s -m slow
 ```
+

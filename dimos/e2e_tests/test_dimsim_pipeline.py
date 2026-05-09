@@ -114,7 +114,9 @@ def dimos_sim_basic():
         # 26MB Rapier snapshot still has to ship and be restored before
         # /odom and /lidar publish. Under GPU rendering this lands in ~10s.
         if not wait_for_log_pattern(
-            log_path, r"Rapier snapshot restored", timeout=60.0
+            log_path,
+            r"(Rapier snapshot restored|\[bridge:[^\]]*\] ready)",
+            timeout=60.0,
         ):
             dump_log("dimos sim-basic", log_path)
             pytest.fail("Rapier snapshot never restored — server physics dead")

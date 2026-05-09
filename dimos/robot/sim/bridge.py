@@ -68,6 +68,18 @@ def _find_local_cli() -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _find_user_scene(name: str) -> Path | None:
+    """Resolve a scene name to a scene file outside the dimsim binary.
+
+    Looks in ``dimos/robot/sim/scenes/<name>.json`` — same location
+    ``SceneClient.save()`` writes to. Returns None if no file exists, in
+    which case the caller falls back to bridge built-ins (``empty``/``apt``/...)
+    shipped in the dimsim binary.
+    """
+    candidate = Path(__file__).resolve().parent / "scenes" / f"{name}.json"
+    return candidate.resolve() if candidate.is_file() else None
+
+
 class DimSimBridgeConfig(NativeModuleConfig):
     """Configuration for the DimSim bridge subprocess."""
 
@@ -151,6 +163,19 @@ class DimSimBridge(NativeModule, Camera, Pointcloud):
         # DIMSIM_SCENE env var overrides config (e.g. DIMSIM_SCENE=empty)
         scene = os.environ.get("DIMSIM_SCENE", "").strip() or self.config.scene
         dev_args = ["dev", "--scene", scene, "--port", str(self.config.port)]
+
+        # User-authored scenes live in dimos, not the dimsim binary's dist/sims.
+        # If the requested scene name resolves to a user file, point the bridge
+        # at it via DIMSIM_SCENE_FILE — bridge reads it as the boot scene.
+        user_scene = _find_user_scene(scene)
+        if user_scene:
+            os.environ["DIMSIM_SCENE_FILE"] = str(user_scene)
+            logger.info(f"User scene {scene!r} resolved to {user_scene}")
+
+        # Bridge watches this dir for hot-reload of the active scene JSON.
+        os.environ["DIMOS_SCENES_DIR"] = str(
+            Path(__file__).resolve().parent / "scenes"
+        )
 
         # Sensor publish rates (env var overrides config)
         image_rate = os.environ.get("DIMSIM_IMAGE_RATE", "").strip() or self.config.image_rate_ms

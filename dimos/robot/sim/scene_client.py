@@ -37,11 +37,14 @@ Or as a context manager::
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import shutil
 import threading
 from typing import Any, cast
+import urllib.error
+import urllib.request
 import uuid
 
 import websocket
@@ -157,6 +160,31 @@ EMBODIMENT_PRESETS: dict[str, dict[str, Any]] = {
 
 ASSETS_DIR = Path.home() / ".dimsim" / "assets"
 
+# Where authored scenes are saved. Lives next to the rest of the sim stack
+# so scene JSONs ride along with the dimos repo (and check into git).
+# Pass `dir=` to `save()` for explicit overrides.
+SCENES_DIR = Path(__file__).resolve().parent / "scenes"
+
+
+def _resolve_scenes_dir(override: str | Path | None = None) -> Path:
+    if override is not None:
+        return Path(override).expanduser().resolve()
+    return SCENES_DIR
+
+
+def _fresh_journal() -> dict[str, Any]:
+    """Schema-shaped record of authoring calls; save() merges this with the
+    bridge's current scene to produce a self-contained JSON. load_map /
+    add_npc bump _unjournaled so save() can warn about un-saved GLB asset
+    additions (v1 limitation)."""
+    return {
+        "embodiment": None,
+        "primitives": [],
+        "spawn_point": None,
+        "_removed_names": set(),
+        "_unjournaled": 0,
+    }
+
 
 class SceneExecError(RuntimeError):
     """Raised when browser-side JS execution fails."""
@@ -202,6 +230,7 @@ class SceneClient:
         self._ws: websocket.WebSocket | None = None
         self._recv_thread: threading.Thread | None = None
         self._closed = False
+        self._journal: dict[str, Any] = _fresh_journal()
         self._connect()
 
     # ── connection lifecycle ──────────────────────────────────────────────
@@ -367,6 +396,8 @@ scene.add(model);
 {collider_js}
 return {{ name: model.name, uuid: model.uuid, collider: col, scaleFactor }};
 """
+        # GLB asset journaling not yet implemented — see save() warning.
+        self._journal["_unjournaled"] += 1
         return cast(dict[str, Any], self.exec(code))
 
     def remove_object(self, name: str) -> bool:
@@ -393,7 +424,16 @@ obj.traverse(c => {{ if (c.isMesh) {{ c.geometry?.dispose(); c.material?.dispose
 scene.remove(obj);
 return true;
 """
-        return cast(bool, self.exec(code))
+        removed = cast(bool, self.exec(code))
+        if removed:
+            # Drop matching primitives from the journal so save() reflects
+            # the deletion. Match by id (set when journal entry was created).
+            self._journal["primitives"] = [
+                p for p in self._journal["primitives"]
+                if p.get("id") != name and p.get("name") != name
+            ]
+            self._journal["_removed_names"].add(name)
+        return removed
 
     def add_npc(
         self,
@@ -441,6 +481,8 @@ return true;
             opts["rotation"] = rotation
         if scale is not None:
             opts["scale"] = scale
+        # NPC asset journaling not yet implemented — see save() warning.
+        self._journal["_unjournaled"] += 1
         return cast(dict[str, Any], self.exec(f"return await addNPC({json.dumps(opts)});"))
 
     def remove_npc(self, name: str) -> bool:
@@ -580,7 +622,37 @@ scene.add(mesh);
 {collider_js}
 return {{ name: mesh.name, uuid: mesh.uuid, collider: col }};
 """
-        return cast(dict[str, Any], self.exec(code))
+        result = cast(dict[str, Any], self.exec(code))
+
+        # Journal: record this primitive in scene-JSON shape so save() can
+        # write a self-contained scene file. Built only after exec succeeds.
+        if geometry == "sphere":
+            dims = {"radius": float(size[0] if size else 0.5)}
+        elif geometry == "cylinder":
+            rt = float(size[0]) if len(size) > 0 else 0.5
+            rb = float(size[1]) if len(size) > 1 else rt
+            ch = float(size[2]) if len(size) > 2 else 1.0
+            dims = {"radiusTop": rt, "radiusBottom": rb, "height": ch}
+        else:
+            w = float(size[0]) if len(size) > 0 else 1.0
+            h = float(size[1]) if len(size) > 1 else 1.0
+            d = float(size[2]) if len(size) > 2 else 1.0
+            dims = {"width": w, "height": h, "depth": d}
+        self._journal["primitives"].append({
+            "id": name or f"prim-{uuid.uuid4().hex[:12]}",
+            "type": geometry,
+            "name": name or "",
+            "dimensions": dims,
+            "transform": {
+                "position": {"x": position[0], "y": position[1], "z": position[2]},
+                "rotation": {"x": 0, "y": 0, "z": 0},
+                "scale": {"x": 1, "y": 1, "z": 1},
+            },
+            "material": {"color": f"#{color:06x}"},
+            "castShadow": True,
+            "receiveShadow": True,
+        })
+        return result
 
     def set_embodiment(
         self,
@@ -711,6 +783,16 @@ return {{ name: mesh.name, uuid: mesh.uuid, collider: col }};
             msg["channel"] = self.channel
         self._ws.send(json.dumps(msg))  # type: ignore[union-attr]
 
+        # Journal: schema-shaped embodiment for scene JSON.
+        self._journal["embodiment"] = {
+            "avatarUrl": cfg.get("avatarUrl", []),
+            "radius": cfg.get("radius"),
+            "halfHeight": cfg.get("halfHeight"),
+            "lidarMountHeight": cfg.get("lidarMountHeight"),
+            "type": cfg.get("embodimentType", "quadruped"),
+            "walkSpeed": cfg.get("maxSpeed", 2.0),
+        }
+
         # Swap the avatar model browser-side via exec
         avatar_urls = cfg.get("avatarUrl", [])
         if avatar_urls:
@@ -725,6 +807,7 @@ return {{ name: mesh.name, uuid: mesh.uuid, collider: col }};
                 agent.avatarUrl = {urls_js};
                 agent.radius = {r};
                 agent.halfHeight = {hh};
+                if (agent.group) agent.group.visible = true;
                 agent._loadGLB();
                 return "avatar_swap_initiated";
             """)
@@ -826,10 +909,13 @@ return {{ name: mesh.name, uuid: mesh.uuid, collider: col }};
 const keep = new Set();
 // Keep agent and its children
 if (agent && agent.group) keep.add(agent.group.uuid);
-// Keep camera, renderer internals, lights
+// Keep camera, lights, engine-internal objects (skyDome, avatar, primitive
+// groups, etc. — tagged via userData.engineInternal in engine.js), and any
+// THREE.Group container. Removing those breaks rendering / future imports.
 scene.children.forEach(c => {
   if (c === camera || c.isLight || c.isAmbientLight || c.isDirectionalLight
-      || c.isHemisphereLight || c === agent?.group) {
+      || c.isHemisphereLight || c === agent?.group
+      || c.userData?.engineInternal === true || c.isGroup === true) {
     keep.add(c.uuid);
   }
 });
@@ -899,6 +985,179 @@ const p = agent.group.position;
 return { x: p.x, y: p.y, z: p.z };
 """
         return cast(dict[str, Any], self.exec(code))
+
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def _fetch_active_scene(self) -> dict[str, Any]:
+        """Fetch the bridge's currently-loaded scene over HTTP.
+
+        Falls back to a minimal empty scene if the bridge endpoint is
+        unavailable (older bridges without the /api/active-scene route).
+        """
+        url = f"http://{self.host}:{self.port}/api/active-scene"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            content = payload.get("content")
+            if isinstance(content, dict):
+                return content
+        except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Could not fetch active scene from bridge ({e}); using empty base")
+        return {
+            "version": "2.0",
+            "worldKey": "default",
+            "tags": ["scene"],
+            "embodiment": None,
+            "assets": [],
+            "primitives": [],
+            "lights": [],
+            "groups": [],
+            "sceneSettings": {},
+        }
+
+    def save(
+        self,
+        name: str,
+        dir: str | Path | None = None,
+        overwrite: bool = True,
+    ) -> Path:
+        """Persist the current authored scene to JSON.
+
+        Reads the bridge's currently-loaded scene as the base, applies all
+        recorded journal entries (additions, embodiment changes, deletions)
+        to produce a self-contained scene file, and writes it to
+        ``<scenes_dir>/<name>.json``. Also tells the bridge that this is now
+        the active scene so a browser refresh shows it.
+
+        Parameters
+        ----------
+        name : str
+            Scene name (without ``.json``). Used as the filename and as the
+            active-scene identifier the bridge will key its cache by.
+        dir : str or Path, optional
+            Override target directory. Defaults to ``dimos/robot/sim/scenes/``.
+        overwrite : bool
+            If False, raises ``FileExistsError`` when the file exists.
+
+        Returns
+        -------
+        Path
+            Path to the written JSON file.
+        """
+        scenes_dir = _resolve_scenes_dir(dir)
+        scenes_dir.mkdir(parents=True, exist_ok=True)
+        path = scenes_dir / f"{name}.json"
+        if path.exists() and not overwrite:
+            raise FileExistsError(f"{path} exists; pass overwrite=True or use a different name")
+
+        if self._journal["_unjournaled"] > 0:
+            logger.warning(
+                f"save({name!r}): {self._journal['_unjournaled']} GLB/NPC asset call(s) "
+                "were not recorded in the journal and will not appear in the saved file. "
+                "GLB/NPC journaling is a v2 feature."
+            )
+
+        base = self._fetch_active_scene()
+        merged = copy.deepcopy(base)
+
+        # Embodiment: journal overrides base if set.
+        if self._journal["embodiment"] is not None:
+            merged["embodiment"] = copy.deepcopy(self._journal["embodiment"])
+
+        # Primitives: drop base entries the user removed AND any base entry
+        # whose id/name collides with a journal entry — journal wins, so a
+        # rerun against an already-saved scene replaces in place instead of
+        # duplicating.
+        removed = self._journal["_removed_names"]
+        journal_ids = {p.get("id") for p in self._journal["primitives"] if p.get("id")}
+        journal_names = {p.get("name") for p in self._journal["primitives"] if p.get("name")}
+        base_prims = [
+            p for p in (merged.get("primitives") or [])
+            if p.get("id") not in removed
+            and p.get("name") not in removed
+            and p.get("id") not in journal_ids
+            and p.get("name") not in journal_names
+        ]
+        merged["primitives"] = base_prims + copy.deepcopy(self._journal["primitives"])
+
+        if self._journal["spawn_point"] is not None:
+            merged["dimosSpawnPoint"] = dict(self._journal["spawn_point"])
+
+        if not isinstance(merged.get("tags"), list):
+            merged["tags"] = ["scene"]
+
+        path.write_text(json.dumps(merged, indent=2))
+        logger.info(f"Saved scene {name!r} → {path}")
+
+        # Tell the bridge: this is the new active scene. broadcast=False so
+        # already-connected browser tabs don't reload (their state already
+        # matches the file). Browser refresh will fetch the new content.
+        msg: dict[str, Any] = {
+            "type": "setActiveScene",
+            "name": name,
+            "content": merged,
+            "broadcast": False,
+        }
+        if self.channel:
+            msg["channel"] = self.channel
+        try:
+            self._ws.send(json.dumps(msg))  # type: ignore[union-attr]
+        except Exception as e:
+            logger.warning(f"save({name!r}): file written but bridge sticky-update failed: {e}")
+
+        return path
+
+    def reset(self) -> None:
+        """Drop the journal and clear the scene browser-side back to base.
+
+        After reset, ``save()`` would only contain whatever was in the base
+        scene. Useful at the top of an authoring script to make reruns
+        idempotent.
+        """
+        self.clear_scene()
+        self._journal = _fresh_journal()
+
+    def set_spawn_point(self, x: float, y: float, z: float) -> None:
+        """Set where the agent spawns when this scene boots via dimos.
+
+        Saved as ``dimosSpawnPoint`` in the scene JSON. Engine.js's dimos
+        boot reads it; without it, the agent falls back to ``(2, 0.5, 3)``
+        which may be inside or below user-authored geometry.
+        """
+        self._journal["spawn_point"] = {"x": float(x), "y": float(y), "z": float(z)}
+        self.set_agent_position(x, y, z)
+
+    def reload(self, name: str, dir: str | Path | None = None) -> None:
+        """Load a saved scene file and broadcast it to all connected viewers.
+
+        Reads ``<scenes_dir>/<name>.json``, sends it to the bridge with
+        ``broadcast=True`` so already-open browser tabs hot-reload via
+        ``importLevelFromJSON``. The bridge also caches it as the active
+        scene, so future browser refreshes see it.
+
+        Parameters
+        ----------
+        name : str
+            Scene name (without ``.json``).
+        dir : str or Path, optional
+            Override source directory.
+        """
+        scenes_dir = _resolve_scenes_dir(dir)
+        path = scenes_dir / f"{name}.json"
+        content = json.loads(path.read_text())
+
+        # Drop the journal — base is now this scene, nothing pending.
+        self._journal = _fresh_journal()
+
+        msg: dict[str, Any] = {
+            "type": "setActiveScene",
+            "name": name,
+            "content": content,
+            "broadcast": True,
+        }
+        if self.channel:
+            msg["channel"] = self.channel
+        self._ws.send(json.dumps(msg))  # type: ignore[union-attr]
 
 
 __all__ = ["EMBODIMENT_PRESETS", "SceneClient", "SceneExecError"]
