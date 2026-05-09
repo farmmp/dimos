@@ -4,6 +4,12 @@
   inputs = {
     # Use 24.05 as base: has freeimage + protobuf v24 (string-returning API)
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    # nixos-23.05 still ships ogre1_10. gz-rendering 8 was developed against
+    # OGRE 1.10/1.11 and uses APIs (Camera::yaw/pitch/roll/setDirection,
+    # SceneManager::_suppressRenderStateChanges, Light::setDirection, etc.)
+    # that were removed in OGRE 13+. We pin only ogre1_10 from this side
+    # channel; everything else stays on 24.05.
+    nixpkgs-old.url = "github:NixOS/nixpkgs/nixos-23.05";
     flake-utils.url = "github:numtide/flake-utils";
     dimos-lcm = {
       url = "github:dimensionalOS/dimos-lcm/main";
@@ -11,7 +17,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, dimos-lcm, ... }:
+  outputs = { self, nixpkgs, nixpkgs-old, flake-utils, dimos-lcm, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -20,6 +26,17 @@
             "freeimage-unstable-2021-11-01"
           ];
         };
+
+        # ogre1_10 — last release of the legacy 1.x API line gz-rendering 8
+        # still expects. Pulled from 23.05 because 24.05 only ships OGRE 13/14.
+        pkgs-old = import nixpkgs-old {
+          inherit system;
+          config.permittedInsecurePackages = [
+            "freeimage-unstable-2021-11-01"
+            "freeimage-3.18.0-unstable-2024-04-18"
+          ];
+        };
+        ogre = pkgs-old.ogre1_10;
 
         # ---------- helper: every gz lib is a cmake project --------
         mkGzPkg = { pname, version, src, buildInputs ? [], cmakeFlags ? [],
@@ -252,13 +269,26 @@
           src = gz-rendering-src;
           buildInputs = [
             gz-cmake gz-utils gz-math gz-common gz-plugin
-            pkgs.ogre pkgs.freeimage pkgs.xorg.libX11
+            ogre pkgs.freeimage pkgs.xorg.libX11
             pkgs.libglvnd pkgs.mesa pkgs.eigen
             pkgs.libuuid pkgs.gdal
+            pkgs.boost      # ogre1_10's threading headers include boost/thread/tss.hpp
+            pkgs.libGL pkgs.libGLU  # OGRE's RenderSystems/GL needs <GL/glu.h>
           ];
           cmakeFlags = [
             "-DCMAKE_PREFIX_PATH=${gz-cmake};${gz-utils};${gz-math};${gz-common};${gz-plugin}"
           ];
+          # Modern libglvnd's <GL/glxext.h> uses GLintptr/GLsizeiptr without
+          # forward-declaring them — those typedefs live in <GL/glext.h>.
+          # Multiple source files include <GL/glx.h> without pulling in
+          # <GL/gl.h>+<GL/glext.h> first; inject them before every glx.h.
+          preConfigure = ''
+            echo "[gz-rendering patch] injecting <GL/gl.h>+<GL/glext.h> before <GL/glx.h>"
+            for f in $(grep -rl '<GL/glx.h>' ogre/ || true); do
+              echo "[gz-rendering patch] patching $f"
+              sed -i 's|<GL/glx.h>|<GL/gl.h>\n# include <GL/glext.h>\n# include <GL/glx.h>|' "$f"
+            done
+          '';
         };
 
         gz-gui = mkGzPkg {
@@ -344,7 +374,7 @@
             sdformat
             pkgs.lcm pkgs.glib pkgs.protobuf
             pkgs.qt5.qtbase pkgs.qt5.qtquickcontrols2 pkgs.qt5.qtdeclarative
-            pkgs.bullet pkgs.ffmpeg pkgs.assimp pkgs.ogre
+            pkgs.bullet pkgs.ffmpeg pkgs.assimp ogre
             pkgs.libyaml pkgs.urdfdom
           ] ++ transitiveDeps;
 
@@ -360,11 +390,14 @@
           # Also point gz-rendering at the Ogre1 render engine plugin.
           postInstall = ''
             wrapProgram $out/bin/gazebo_native \
-              --prefix GZ_SIM_SYSTEM_PLUGIN_PATH  : ${gz-sim}/lib/gz-sim-8/plugins \
-              --prefix GZ_SIM_RESOURCE_PATH       : ${gz-sim}/share/gz/gz-sim8 \
-              --prefix GZ_SIM_PHYSICS_ENGINE_PATH : ${gz-physics}/lib \
-              --prefix GZ_GUI_PLUGIN_PATH         : ${gz-gui}/lib/gz-gui-8/plugins \
-              --set    GZ_CONFIG_PATH               ${gz-cmake}/share/gz
+              --prefix GZ_SIM_SYSTEM_PLUGIN_PATH    : ${gz-sim}/lib/gz-sim-8/plugins \
+              --prefix GZ_SIM_RESOURCE_PATH         : ${gz-sim}/share/gz/gz-sim8 \
+              --prefix GZ_SIM_PHYSICS_ENGINE_PATH   : ${gz-physics}/lib \
+              --prefix GZ_GUI_PLUGIN_PATH           : ${gz-gui}/lib/gz-gui-8/plugins \
+              --prefix GZ_RENDERING_PLUGIN_PATH     : ${gz-rendering}/lib/gz-rendering-8/engine-plugins \
+              --prefix GZ_RENDERING_RESOURCE_PATH   : ${gz-rendering}/share/gz/gz-rendering8 \
+              --prefix OGRE_RESOURCE_PATH           : ${ogre}/lib/OGRE \
+              --set    GZ_CONFIG_PATH                 ${gz-cmake}/share/gz
           '';
         };
 
