@@ -112,6 +112,27 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     # MJCFs that reference meshes by bare filename (G1 GR00T, Go2) need this;
     # self-contained MJCFs with on-disk meshes (xarm scene.xml) don't.
     inject_legacy_assets: bool = False
+    # MJCF sensor names used to publish IMU. The module probes these in
+    # order and uses the first that exists in the model; if none match
+    # IMU publishing stays silent. Default list covers the common
+    # humanoid pelvis-mounted naming conventions (menagerie + dimos
+    # bundled MJCFs); pass robot-specific names for other platforms.
+    imu_gyro_sensor_names: list[str] = Field(
+        default_factory=lambda: [
+            "imu-pelvis-angular-velocity",
+            "imu-torso-angular-velocity",
+            "gyro_pelvis",
+            "imu_gyro",
+        ]
+    )
+    imu_accel_sensor_names: list[str] = Field(
+        default_factory=lambda: [
+            "imu-pelvis-linear-acceleration",
+            "imu-torso-linear-acceleration",
+            "accelerometer_pelvis",
+            "imu_accel",
+        ]
+    )
 
 
 class MujocoSimModule(
@@ -265,25 +286,15 @@ class MujocoSimModule(
                 joint_range=joint_range,
             )
 
-        # Resolve IMU sensors once.  Whole-body MJCFs declare gyro/accel
-        # under various names; we accept the menagerie and dimos-bundled
-        # variants.  Manipulator MJCFs typically have neither — we just
-        # leave the slices as None and skip IMU publishing for those.
+        # Resolve IMU sensors once. Names come from config so robot-
+        # specific blueprints (G1, H1, Optimus, …) can override; manipulator
+        # MJCFs typically have neither — we leave the slices as None and
+        # skip IMU publishing for those.
         self._imu_gyro_slice = _find_sensor_slice(
-            self._engine.model,
-            "imu-pelvis-angular-velocity",
-            "imu-torso-angular-velocity",
-            "gyro_pelvis",
-            "imu_gyro",
-            dim=3,
+            self._engine.model, *self.config.imu_gyro_sensor_names, dim=3
         )
         self._imu_accel_slice = _find_sensor_slice(
-            self._engine.model,
-            "imu-pelvis-linear-acceleration",
-            "imu-torso-linear-acceleration",
-            "accelerometer_pelvis",
-            "imu_accel",
-            dim=3,
+            self._engine.model, *self.config.imu_accel_sensor_names, dim=3
         )
         # Floating-base orientation is qpos[3:7] (w,x,y,z) when the root
         # joint is a free joint.  Detect by checking jnt_type[0].
@@ -440,7 +451,7 @@ class MujocoSimModule(
         # from qpos[0:7] every step.  Without this, downstream consumers
         # (viser viewer, nav stack) only see joint articulation, not
         # base translation through the world.
-        data = engine._data  # type: ignore[attr-defined]  # in-process, same MjData
+        data = engine.data  # in-process: same MjData the sim thread mutates
         if self._imu_base_qpos_slice is not None:
             base_pos = data.qpos[0:3]
             base_quat = data.qpos[3:7]  # (w, x, y, z) per MuJoCo convention

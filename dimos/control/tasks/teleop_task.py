@@ -360,3 +360,28 @@ __all__ = [
     "TeleopIKTask",
     "TeleopIKTaskConfig",
 ]
+
+
+def register(registry: Any) -> None:
+    """Self-registration hook called by the task registry on discovery."""
+
+    def _factory(cfg: Any, hardware: Any) -> TeleopIKTask:
+        if cfg.model_path is None:
+            raise ValueError(
+                f"TeleopIKTask {cfg.name!r} requires model_path in TaskConfig"
+            )
+        return TeleopIKTask(
+            cfg.name,
+            TeleopIKTaskConfig(
+                joint_names=cfg.joint_names,
+                model_path=cfg.model_path,
+                ee_joint_id=cfg.ee_joint_id,
+                priority=cfg.priority,
+                hand=cfg.hand,
+                gripper_joint=cfg.gripper_joint,
+                gripper_open_pos=cfg.gripper_open_pos,
+                gripper_closed_pos=cfg.gripper_closed_pos,
+            ),
+        )
+
+    registry.register("teleop_ik", _factory)

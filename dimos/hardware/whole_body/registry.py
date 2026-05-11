@@ -14,16 +14,15 @@
 
 """WholeBodyAdapter registry with auto-discovery.
 
-Mirrors the TwistBaseAdapterRegistry pattern: each subpackage provides a
-``register(registry)`` function in its ``adapter.py`` module.
+Each adapter module exposes a ``register(registry)`` function that the
+registry calls during discovery. Two roots are scanned:
 
-Discovery handles two layouts so both flat ("kind") and nested
-("vendor/robot") subpackages register correctly:
-
-* ``dimos/hardware/whole_body/<kind>/adapter.py`` — Mustafa's transport
-  adapter (``transport/adapter.py``).
-* ``dimos/hardware/whole_body/<vendor>/<robot>/adapter.py`` — our
-  MuJoCo sim adapter (``mujoco/g1/adapter.py``).
+* ``dimos/hardware/whole_body/`` — real-hardware adapters (Unitree DDS,
+  transport-LCM bridge). Subpackages are either flat ``<kind>/adapter.py``
+  or nested ``<vendor>/<robot>/adapter.py``.
+* ``dimos/simulation/adapters/whole_body/`` — sim adapters
+  (``g1.py``, etc.). Sim engines live under ``dimos/simulation/`` so
+  their adapter glue lives there too instead of under ``hardware/``.
 
 Usage:
     from dimos.hardware.whole_body.registry import whole_body_adapter_registry
@@ -72,16 +71,39 @@ class WholeBodyAdapterRegistry:
         return sorted(self._adapters.keys())
 
     def discover(self) -> None:
-        """Discover and register adapters from subpackages.
+        """Discover and register adapters from both subpackages.
 
-        Walks ``dimos/hardware/whole_body/`` recursively (max depth 2)
-        looking for ``adapter.py`` modules with a ``register(registry)``
-        function.  Skips dunder/dot directories.
+        Walks each scan root recursively (max depth 2) looking for either
+        an ``adapter.py`` module (legacy hardware/whole_body layout) or a
+        flat ``<name>.py`` module (simulation/adapters/whole_body layout),
+        each providing a ``register(registry)`` function. Skips dunder/
+        dot directories.
         """
-        import dimos.hardware.whole_body as pkg
+        import dimos.hardware.whole_body as hw_pkg
+        import dimos.simulation.adapters.whole_body as sim_pkg
 
-        pkg_dir = pkg.__path__[0]
-        self._discover_in("dimos.hardware.whole_body", pkg_dir, max_depth=2)
+        self._discover_in(
+            "dimos.hardware.whole_body", hw_pkg.__path__[0], max_depth=2
+        )
+        self._discover_flat(
+            "dimos.simulation.adapters.whole_body", sim_pkg.__path__[0]
+        )
+
+    def _discover_flat(self, pkg_path: str, dir_path: str) -> None:
+        """Discovery variant for the simulation adapters layout: each
+        module is a flat ``<name>.py`` (not a ``<name>/adapter.py``
+        subpackage). Skips dunder files and __init__.py."""
+        for entry in sorted(os.listdir(dir_path)):
+            if not entry.endswith(".py") or entry.startswith("_"):
+                continue
+            mod_name = f"{pkg_path}.{entry[:-3]}"
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError as e:
+                logger.warning(f"Skipping whole-body adapter {mod_name}: {e}")
+                continue
+            if hasattr(mod, "register"):
+                mod.register(self)
 
     def _discover_in(self, pkg_path: str, dir_path: str, *, max_depth: int) -> None:
         for entry in sorted(os.listdir(dir_path)):

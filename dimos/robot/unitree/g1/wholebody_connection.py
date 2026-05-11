@@ -219,77 +219,120 @@ class G1WholeBodyConnection(Module):
         logger.info("G1WholeBodyConnection disconnected")
         super().stop()
 
+    # Identity quaternion + zeros while LowState hasn't arrived (start() blocks
+    # for it, but the publish loop may also see _low_state cleared during stop()).
+    _ZERO_QUAT = (1.0, 0.0, 0.0, 0.0)
+    _ZERO_VEC3 = (0.0, 0.0, 0.0)
+
+    def _drain_low_state(self) -> None:
+        """Pull the freshest LowState frame off the subscriber and stash it."""
+        sub = self._subscriber
+        if sub is None:
+            return
+        fresh = sub.Read()
+        if fresh is None:
+            return
+        with self._lock:
+            self._low_state = fresh
+        self._verify_mode_machine_once(fresh)
+
+    def _verify_mode_machine_once(self, sample: object) -> None:
+        """One-shot sanity check: log if the hardcoded mode_machine
+        doesn't match what the firmware reports. Commands with a
+        wrong mode_machine are silently rejected, so this prevents
+        a confusing "everything looks fine but the robot doesn't
+        move" failure mode on G1 variants we haven't tested."""
+        if self._mode_machine_verified:
+            return
+        self._mode_machine_verified = True
+        actual = int(getattr(sample, "mode_machine", -1))
+        if actual != self._mode_machine:
+            logger.warning(
+                f"mode_machine mismatch: hardcoded {self._mode_machine}, "
+                f"robot reports {actual}.  Commands may be silently rejected "
+                f"by firmware — set _MODE_MACHINE_G1 to {actual} for this variant."
+            )
+
+    def _snapshot_motor_imu(
+        self,
+    ) -> tuple[
+        list[float], list[float], list[float],
+        tuple[float, float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]:
+        """Return (positions, velocities, efforts, quat, gyro, accel) for
+        the latest cached LowState, or zero-defaults when none has been
+        received yet."""
+        with self._lock:
+            ls = self._low_state
+            if ls is None:
+                return (
+                    [0.0] * _NUM_MOTORS,
+                    [0.0] * _NUM_MOTORS,
+                    [0.0] * _NUM_MOTORS,
+                    self._ZERO_QUAT,
+                    self._ZERO_VEC3,
+                    self._ZERO_VEC3,
+                )
+            return (
+                [ls.motor_state[i].q for i in range(_NUM_MOTORS)],
+                [ls.motor_state[i].dq for i in range(_NUM_MOTORS)],
+                [ls.motor_state[i].tau_est for i in range(_NUM_MOTORS)],
+                tuple(ls.imu_state.quaternion),
+                tuple(ls.imu_state.gyroscope),
+                tuple(ls.imu_state.accelerometer),
+            )
+
+    def _publish_motor_state_and_imu(
+        self,
+        now: float,
+        frame_id: str,
+        positions: list[float],
+        velocities: list[float],
+        efforts: list[float],
+        quat: tuple[float, float, float, float],
+        gyro: tuple[float, float, float],
+        accel: tuple[float, float, float],
+    ) -> None:
+        self.motor_states.publish(
+            JointState(
+                ts=now,
+                frame_id=frame_id,
+                name=G1_JOINT_NAMES,
+                position=positions,
+                velocity=velocities,
+                effort=efforts,
+            )
+        )
+        # Unitree quat is (w,x,y,z); dimos Quaternion is (x,y,z,w).
+        self.imu.publish(
+            Imu(
+                ts=now,
+                frame_id=frame_id,
+                orientation=Quaternion(quat[1], quat[2], quat[3], quat[0]),
+                angular_velocity=Vector3(gyro[0], gyro[1], gyro[2]),
+                linear_acceleration=Vector3(accel[0], accel[1], accel[2]),
+            )
+        )
+
     def _publish_loop(self) -> None:
         period = 1.0 / float(self.config.publish_rate_hz)
         next_tick = time.perf_counter()
         frame_id = self.config.frame_id
 
-        # Identity quaternion + zeros while LowState hasn't arrived (start() blocks
-        # for it, but the publish loop may also see _low_state cleared during stop()).
-        zero_quat = (1.0, 0.0, 0.0, 0.0)
-        zero_vec3 = (0.0, 0.0, 0.0)
-
         while not self._stop_event.is_set():
-            # Drain the latest LowState frame (None means no fresh sample
-            # this tick — keep the previous one).
-            sub = self._subscriber
-            if sub is not None:
-                fresh = sub.Read()
-                if fresh is not None:
-                    with self._lock:
-                        self._low_state = fresh
-                        # One-shot sanity check on the hardcoded mode_machine.
-                        if not self._mode_machine_verified:
-                            self._mode_machine_verified = True
-                            actual = int(getattr(fresh, "mode_machine", -1))
-                            if actual != self._mode_machine:
-                                logger.warning(
-                                    f"mode_machine mismatch: hardcoded "
-                                    f"{self._mode_machine}, robot reports "
-                                    f"{actual}.  Commands may be silently "
-                                    f"rejected by firmware — set "
-                                    f"_MODE_MACHINE_G1 to {actual} for this "
-                                    f"variant."
-                                )
-
-            with self._lock:
-                ls = self._low_state
-                if ls is None:
-                    positions: list[float] = [0.0] * _NUM_MOTORS
-                    velocities: list[float] = [0.0] * _NUM_MOTORS
-                    efforts: list[float] = [0.0] * _NUM_MOTORS
-                    quat = zero_quat
-                    gyro = zero_vec3
-                    accel = zero_vec3
-                else:
-                    positions = [ls.motor_state[i].q for i in range(_NUM_MOTORS)]
-                    velocities = [ls.motor_state[i].dq for i in range(_NUM_MOTORS)]
-                    efforts = [ls.motor_state[i].tau_est for i in range(_NUM_MOTORS)]
-                    quat = tuple(ls.imu_state.quaternion)
-                    gyro = tuple(ls.imu_state.gyroscope)
-                    accel = tuple(ls.imu_state.accelerometer)
-
-            now = time.time()
-            self.motor_states.publish(
-                JointState(
-                    ts=now,
-                    frame_id=frame_id,
-                    name=G1_JOINT_NAMES,
-                    position=positions,
-                    velocity=velocities,
-                    effort=efforts,
-                )
-            )
-
-            # Unitree quat is (w,x,y,z); dimos Quaternion is (x,y,z,w).
-            self.imu.publish(
-                Imu(
-                    ts=now,
-                    frame_id=frame_id,
-                    orientation=Quaternion(quat[1], quat[2], quat[3], quat[0]),
-                    angular_velocity=Vector3(gyro[0], gyro[1], gyro[2]),
-                    linear_acceleration=Vector3(accel[0], accel[1], accel[2]),
-                )
+            self._drain_low_state()
+            positions, velocities, efforts, quat, gyro, accel = self._snapshot_motor_imu()
+            self._publish_motor_state_and_imu(
+                now=time.time(),
+                frame_id=frame_id,
+                positions=positions,
+                velocities=velocities,
+                efforts=efforts,
+                quat=quat,
+                gyro=gyro,
+                accel=accel,
             )
 
             next_tick += period

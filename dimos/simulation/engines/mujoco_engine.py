@@ -344,6 +344,14 @@ class MujocoEngine(SimulationEngine):
         return self._model
 
     @property
+    def data(self) -> mujoco.MjData:
+        """Live MjData. In-process consumers (sensors, PD hooks) read it
+        directly; physics integration in the sim thread mutates it under
+        ``self._lock`` so reads inside the same MujocoEngine instance are
+        coherent without extra locking."""
+        return self._data
+
+    @property
     def joint_positions(self) -> list[float]:
         with self._lock:
             return list(self._joint_positions)
@@ -467,9 +475,141 @@ class MujocoEngine(SimulationEngine):
         return float(self._model.cam_fovy[cam_id])
 
 
+def view_main(mjcf_path: str, *, render_hz: float = 60.0) -> None:
+    """Standalone passive-viewer entry point.
+
+    Loads ``mjcf_path``, subscribes to ``/coordinator/joint_state`` +
+    ``/odom`` over LCM, and mirrors that state into a ``mujoco.viewer``
+    window without running physics. Used by ``MujocoViewerModule`` on
+    macOS where ``mujoco.viewer.launch_passive`` requires the main
+    thread (and so can't live inside a dimos worker).
+
+    Previously this code lived in a separate
+    ``mujoco_view_subprocess.py`` module; folded back in here so we
+    have one MuJoCo file instead of three.
+    """
+    import numpy as _np
+
+    from dimos.core.transport import LCMTransport
+    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+    from dimos.msgs.sensor_msgs.JointState import JointState
+
+    # dimos joint names look like ``g1/left_hip_pitch``; MJCF wants
+    # ``left_hip_pitch_joint``. Same translation rule as the viser
+    # viewer's robot_meshes helper.
+    def dimos_joint_to_mjcf(name: str) -> str:
+        parts = name.split("/", 1)
+        suffix = parts[1] if len(parts) > 1 else parts[0]
+        return f"{suffix}_joint"
+
+    # G1 GR00T MJCF references meshes by bare filename (menagerie
+    # convention); inject dimos-bundled mesh bytes by name so
+    # from_xml_string can find them. Falls back to from_xml_path for
+    # self-contained MJCFs.
+    try:
+        from dimos.simulation.mujoco.model import get_assets
+
+        with open(mjcf_path) as _f:
+            _xml = _f.read()
+        model = mujoco.MjModel.from_xml_string(_xml, assets=get_assets())
+    except Exception:
+        model = mujoco.MjModel.from_xml_path(mjcf_path)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    name_to_qposadr: dict[str, int] = {}
+    for jid in range(model.njnt):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if not name:
+            continue
+        if model.jnt_type[jid] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
+            name_to_qposadr[name] = int(model.jnt_qposadr[jid])
+
+    # Lock-protected latest state — LCM callbacks fire on a different
+    # thread than the viewer loop.
+    latest_lock = threading.Lock()
+    latest_joints: dict[str, float] = {}
+    latest_base_pos: _np.ndarray | None = None
+    latest_base_wxyz: _np.ndarray | None = None
+
+    def _on_joint_state(msg: JointState) -> None:
+        nonlocal latest_joints
+        try:
+            with latest_lock:
+                for n, q in zip(list(msg.name), list(msg.position), strict=False):
+                    latest_joints[dimos_joint_to_mjcf(str(n))] = float(q)
+        except Exception:
+            pass
+
+    def _on_odom(msg: PoseStamped) -> None:
+        nonlocal latest_base_pos, latest_base_wxyz
+        try:
+            with latest_lock:
+                latest_base_pos = _np.array(
+                    [msg.position.x, msg.position.y, msg.position.z], dtype=_np.float64
+                )
+                latest_base_wxyz = _np.array(
+                    [msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z],
+                    dtype=_np.float64,
+                )
+        except Exception:
+            pass
+
+    js_t: LCMTransport[JointState] = LCMTransport("/coordinator/joint_state", JointState)
+    js_t.start()
+    js_t.subscribe(_on_joint_state)
+    od_t: LCMTransport[PoseStamped] = LCMTransport("/odom", PoseStamped)
+    od_t.start()
+    od_t.subscribe(_on_odom)
+
+    has_freejoint = bool(model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE)
+    free_qposadr = int(model.jnt_qposadr[0]) if has_freejoint else -1
+    period = 1.0 / float(render_hz)
+
+    try:
+        with viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=True) as v:
+            while v.is_running():
+                tick_start = time.perf_counter()
+                with latest_lock:
+                    joints = dict(latest_joints)
+                    base_pos = latest_base_pos
+                    base_wxyz = latest_base_wxyz
+                for name, q in joints.items():
+                    adr = name_to_qposadr.get(name)
+                    if adr is not None:
+                        data.qpos[adr] = q
+                if has_freejoint and base_pos is not None and base_wxyz is not None:
+                    data.qpos[free_qposadr : free_qposadr + 3] = base_pos
+                    data.qpos[free_qposadr + 3 : free_qposadr + 7] = base_wxyz
+                mujoco.mj_kinematics(model, data)
+                v.sync()
+                # Subtract iteration time so we hold render_hz under load.
+                sleep_for = period - (time.perf_counter() - tick_start)
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+    finally:
+        # Always tear down LCM subscribers even if the viewer crashes
+        # — leaking transport threads makes the next run flaky.
+        js_t.stop()
+        od_t.stop()
+
+
 __all__ = [
     "CameraConfig",
     "CameraFrame",
     "MujocoEngine",
     "StepHook",
+    "view_main",
 ]
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 2:
+        print(
+            "usage: python -m dimos.simulation.engines.mujoco_engine <mjcf>",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    view_main(sys.argv[1])

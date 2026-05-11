@@ -24,6 +24,7 @@ CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from dimos.control.task import (
     BaseControlTask,
@@ -256,3 +257,20 @@ __all__ = [
     "JointTrajectoryTask",
     "JointTrajectoryTaskConfig",
 ]
+
+
+def register(registry: Any) -> None:
+    """Self-registration hook called by the task registry on discovery.
+
+    Factory ignores ``hardware`` — trajectory tasks own no adapter."""
+
+    def _factory(cfg: Any, hardware: Any) -> JointTrajectoryTask:
+        return JointTrajectoryTask(
+            cfg.name,
+            JointTrajectoryTaskConfig(
+                joint_names=cfg.joint_names,
+                priority=cfg.priority,
+            ),
+        )
+
+    registry.register("trajectory", _factory)

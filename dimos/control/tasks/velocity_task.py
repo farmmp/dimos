@@ -24,6 +24,8 @@ CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations
+from typing import Any
+
 
 from dataclasses import dataclass
 import threading
@@ -271,3 +273,18 @@ __all__ = [
     "JointVelocityTask",
     "JointVelocityTaskConfig",
 ]
+
+
+def register(registry: Any) -> None:
+    """Self-registration hook called by the task registry on discovery."""
+
+    def _factory(cfg: Any, hardware: Any) -> JointVelocityTask:
+        return JointVelocityTask(
+            cfg.name,
+            JointVelocityTaskConfig(
+                joint_names=cfg.joint_names,
+                priority=cfg.priority,
+            ),
+        )
+
+    registry.register("velocity", _factory)

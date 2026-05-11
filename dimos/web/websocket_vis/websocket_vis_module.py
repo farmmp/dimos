@@ -59,7 +59,6 @@ from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path
-from dimos.msgs.std_msgs.Bool import Bool as DimosBool
 from dimos.utils.logging_config import setup_logger
 
 from .optimized_costmap import OptimizedCostmapEncoder
@@ -108,13 +107,10 @@ class WebsocketVisModule(Module):
     stop_explore_cmd: Out[Bool]
     cmd_vel: Out[Twist]
     movecmd_stamped: Out[TwistStamped]
-    # Arming / dry-run for locomotion-policy tasks (e.g. GrootWBCTask).
-    # Uses dimos.msgs.std_msgs.Bool to match the coordinator's
-    # ``activate`` / ``dry_run`` In[Bool] ports, rather than
-    # dimos_lcm.std_msgs.Bool used by ``explore_cmd`` — the LCM wire
-    # format is identical; what matters for autoconnect is type parity.
-    activate: Out[DimosBool]
-    dry_run: Out[DimosBool]
+    # NOTE: arm/disarm/dry-run aren't Out streams. The dashboard calls
+    # ``ControlCoordinator.set_activated()`` / ``.set_dry_run()`` directly
+    # via the module RPC client (see ``_coordinator_client``) — they're
+    # one-shot events, not continuous signals.
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the WebSocket visualization module.
@@ -137,9 +133,32 @@ class WebsocketVisModule(Module):
 
         # Track GPS goal points for visualization
         self.gps_goal_points: list[dict[str, float]] = []
+
+        # Lazy-initialised RPC client to ControlCoordinator. Used by the
+        # dashboard's arm/disarm/set_dry_run buttons which call the
+        # coordinator's @rpc set_activated / set_dry_run directly (no
+        # stream round-trip — arming is one-shot).
+        self._coordinator_client: Any | None = None
+
         logger.info(
             f"WebSocket visualization module initialized on port {self.config.port}, GPS goal tracking enabled"
         )
+
+    def _get_coordinator_client(self) -> Any | None:
+        """Lazy-init RPC client to ControlCoordinator. Returns None and
+        warns once if the coordinator isn't reachable (e.g. ws_vis is
+        being used in a blueprint that has no coordinator). Mirrors the
+        pattern in ``G1ManipulationModule._get_coordinator_client``."""
+        if self._coordinator_client is None:
+            try:
+                from dimos.control.coordinator import ControlCoordinator
+                from dimos.core.rpc_client import RPCClient
+
+                self._coordinator_client = RPCClient(None, ControlCoordinator)
+            except Exception as e:
+                logger.warning(f"ControlCoordinator RPC unreachable: {e}")
+                return None
+        return self._coordinator_client
 
     def _start_broadcast_loop(self) -> None:
         def websocket_vis_loop() -> None:
@@ -341,20 +360,22 @@ class WebsocketVisModule(Module):
         @self.sio.event  # type: ignore[untyped-decorator]
         async def arm(sid: str, data: dict[str, Any] | None = None) -> None:
             """Dashboard → arm the locomotion policy (with ramp)."""
-            if self.activate and self.activate.transport:
-                logger.info("Dashboard requested arm")
-                self.activate.publish(DimosBool(data=True))
-            else:
-                logger.warning("arm requested but activate transport is not configured")
+            client = self._get_coordinator_client()
+            if client is None:
+                logger.warning("arm requested but ControlCoordinator RPC is unavailable")
+                return
+            logger.info("Dashboard requested arm")
+            client.set_activated(engaged=True)
 
         @self.sio.event  # type: ignore[untyped-decorator]
         async def disarm(sid: str, data: dict[str, Any] | None = None) -> None:
             """Dashboard → disarm; task falls back to hold-current-pose."""
-            if self.activate and self.activate.transport:
-                logger.info("Dashboard requested disarm")
-                self.activate.publish(DimosBool(data=False))
-            else:
-                logger.warning("disarm requested but activate transport is not configured")
+            client = self._get_coordinator_client()
+            if client is None:
+                logger.warning("disarm requested but ControlCoordinator RPC is unavailable")
+                return
+            logger.info("Dashboard requested disarm")
+            client.set_activated(engaged=False)
 
         @self.sio.event  # type: ignore[untyped-decorator]
         async def set_dry_run(sid: str, data: dict[str, Any]) -> None:
@@ -363,12 +384,13 @@ class WebsocketVisModule(Module):
             Payload: ``{"enabled": bool}``.  Task still computes but
             coordinator sends nothing to the adapter when enabled.
             """
-            if self.dry_run and self.dry_run.transport:
-                enabled = bool(data.get("enabled", False))
-                logger.info(f"Dashboard set dry_run = {enabled}")
-                self.dry_run.publish(DimosBool(data=enabled))
-            else:
-                logger.warning("set_dry_run requested but dry_run transport is not configured")
+            client = self._get_coordinator_client()
+            if client is None:
+                logger.warning("set_dry_run requested but ControlCoordinator RPC is unavailable")
+                return
+            enabled = bool(data.get("enabled", False))
+            logger.info(f"Dashboard set dry_run = {enabled}")
+            client.set_dry_run(enabled=enabled)
 
         @self.sio.event  # type: ignore[untyped-decorator]
         async def move_command(sid: str, data: dict[str, Any]) -> None:
