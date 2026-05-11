@@ -7,6 +7,7 @@ on:
     paths-ignore:
       - '**.md'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -15,6 +16,7 @@ permissions:
 
 jobs:
   check-changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: [self-hosted, Linux]
     outputs:
       ros:    ${{ steps.filter.outputs.ros }}
@@ -46,7 +48,6 @@ jobs:
               - .github/workflows/_docker-build-template.yml
               - .github/workflows/docker.yml
               - docker/python/**
-              - pyproject.toml
 
             dev:
               - docker/dev/**
@@ -58,6 +59,8 @@ jobs:
 
             tests:
               - dimos/**
+              - pyproject.toml
+              - uv.lock
 
       - name: Determine Branch Tag
         id: set-tag
@@ -199,7 +202,7 @@ jobs:
       to-image: ghcr.io/dimensionalos/ros-dev:${{ needs.check-changes.outputs.branch-tag }}
       dockerfile: dev
 
-  run-ros-tests:
+  run-tests:
     needs: [check-changes, ros-dev]
     if: ${{
       always() &&
@@ -212,7 +215,8 @@ jobs:
     uses: ./.github/workflows/tests.yml
     secrets: inherit
     with:
-      cmd: "pytest --durations=0 -m 'not (tool or mujoco)'"
+      cmd: "_DIMOS_COV=1 coverage run -m pytest --durations=0 -m 'not (tool or mujoco)' && coverage combine && coverage html && coverage report"
+      upload-coverage: true
       dev-image: ros-dev:${{ (needs.check-changes.outputs.python == 'true' || needs.check-changes.outputs.dev == 'true' || needs.check-changes.outputs.ros == 'true') && needs.ros-dev.result == 'success' && needs.check-changes.outputs.branch-tag || 'dev' }}
 
   run-mypy:
@@ -232,7 +236,7 @@ jobs:
       dev-image: ros-dev:${{ (needs.check-changes.outputs.python == 'true' || needs.check-changes.outputs.dev == 'true' || needs.check-changes.outputs.ros == 'true') && needs.ros-dev.result == 'success' && needs.check-changes.outputs.branch-tag || 'dev' }}
 
   ci-complete:
-    needs: [check-changes, ros, python, ros-python, dev, ros-dev, run-ros-tests, run-mypy]
+    needs: [check-changes, ros, python, ros-python, dev, ros-dev, run-tests, run-mypy]
     runs-on: [self-hosted, Linux]
     if: always()
     steps:

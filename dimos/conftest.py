@@ -19,6 +19,7 @@ import threading
 from dotenv import load_dotenv
 import pytest
 
+from dimos.core.module_coordinator import ModuleCoordinator
 from dimos.protocol.service.lcmservice import autoconf
 
 load_dotenv()
@@ -41,6 +42,10 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "skipif_no_openai: skip when OPENAI_API_KEY is not set")
     config.addinivalue_line("markers", "skipif_no_alibaba: skip when ALIBABA_API_KEY is not set")
     config.addinivalue_line("markers", "skipif_no_ros: skip when ROS dependencies are not present")
+
+    # Propagate coverage collection to subprocesses.
+    if os.environ.get("_DIMOS_COV"):
+        os.environ["COVERAGE_PROCESS_START"] = str(config.rootpath / "pyproject.toml")
 
 
 @pytest.hookimpl()
@@ -86,9 +91,8 @@ _before_test_threads = {}  # Map test name to set of thread IDs before test
 
 @pytest.fixture(scope="module")
 def dimos_cluster():
-    from dimos.core import start
-
-    dimos = start(4)
+    dimos = ModuleCoordinator()
+    dimos.start()
     try:
         yield dimos
     finally:

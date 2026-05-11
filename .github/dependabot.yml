@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    # https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "uv"
+    directory: "/"
+    allow:
+      - dependency-type: "all"
+    schedule:
+      interval: "daily"
+    # https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directories: ["/docker/*/"]
+    schedule:
+      interval: "monthly"
+    # https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns
+    cooldown:
+      default-days: 7
