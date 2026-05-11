@@ -34,7 +34,6 @@ from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from dimos.hardware.whole_body.registry import WholeBodyAdapterRegistry
-    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 logger = setup_logger()
 
@@ -128,12 +127,6 @@ class TransportWholeBodyAdapter:
             if self._latest_imu is None:
                 return IMUState()
             return self._latest_imu
-
-    def read_odom(self) -> PoseStamped | None:
-        # No native odom on this transport bridge — publish odom separately
-        # if a base estimator is available.  Returning None satisfies the
-        # WholeBodyAdapter Protocol's runtime_checkable isinstance check.
-        return None
 
     def write_motor_commands(self, commands: list[MotorCommand]) -> bool:
         if self._motor_command_transport is None:

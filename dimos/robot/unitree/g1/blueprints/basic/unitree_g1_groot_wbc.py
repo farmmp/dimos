@@ -59,7 +59,6 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
 from dimos.hardware.whole_body.spec import WholeBodyConfig
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -87,11 +86,11 @@ if global_config.simulation:
         enable_depth=False,
         enable_pointcloud=False,
         inject_legacy_assets=True,
-    ).transports(
-        # Engine's own /odom goes to /sim/odom so the coordinator's
-        # /odom (adapter-sourced) doesn't collide on the bus.
-        {("odom", PoseStamped): LCMTransport("/sim/odom", PoseStamped)}
     )
+    # MujocoSimModule's ``odom`` Out is the sole producer of ``/odom``
+    # now — the coordinator no longer polls the whole-body adapter for
+    # base pose (read_odom was dropped from the Protocol). autoconnect
+    # maps ``(odom, PoseStamped)`` to ``/odom`` by default; no override.
     _adapter_type = "sim_mujoco_g1"
     _adapter_address: str = str(_MJCF_PATH)
     _tick_rate = 50.0
@@ -165,7 +164,6 @@ _coordinator = ControlCoordinator.blueprint(
 ).transports(
     {
         ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
-        ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
         ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
         ("twist_command", Twist): LCMTransport("/g1/cmd_vel", Twist),
         # Real-hw only: the transport_lcm adapter speaks to

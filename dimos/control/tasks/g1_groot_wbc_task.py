@@ -448,15 +448,17 @@ class G1GrootWBCTask(BaseControlTask):
         # updates don't tear the obs vector.
         q_29 = self._cached_q_29.copy()
         dq_29 = self._cached_dq_29.copy()
-        # TODO(post-refactor): CoordinatorState should carry IMU too
-        # (see PR #2033 review). Right now we have to reach back into
-        # the adapter for read_imu(), which couples the task to the
-        # adapter Protocol; pushing IMU into CoordinatorState removes
-        # that coupling and lets other obs-building tasks read it
-        # through the same channel as joint state.
 
-        # IMU comes from the adapter, not CoordinatorState.
-        imu = self._adapter.read_imu()
+        # Prefer IMU from CoordinatorState (populated by the coordinator
+        # each tick from every whole-body adapter); fall back to the
+        # adapter-direct read if state.imu is empty (e.g. unit tests
+        # that build a bare CoordinatorState). The state path is what
+        # decouples this task from the WholeBodyAdapter Protocol.
+        if state.imu:
+            # Single whole-body adapter is the common case — take any.
+            imu = next(iter(state.imu.values()))
+        else:
+            imu = self._adapter.read_imu()
         gyro = np.asarray(imu.gyroscope, dtype=np.float32)
         gravity = self._projected_gravity(imu.quaternion)
 

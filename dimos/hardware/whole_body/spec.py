@@ -17,10 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from typing import Protocol, runtime_checkable
 
 # Unitree SDK sentinels meaning "no command" for that DOF.
 POS_STOP: float = 2.146e9
@@ -86,14 +83,6 @@ class WholeBodyAdapter(Protocol):
     def read_motor_states(self) -> list[MotorState]: ...
     def has_motor_states(self) -> bool: ...
     def read_imu(self) -> IMUState: ...
-    def read_odom(self) -> PoseStamped | None:
-        # Default: no base pose available. Sim/estimator adapters override.
-        # TODO(post-refactor): pull this method out of the Protocol
-        # entirely — most WholeBodyAdapters won't ever produce odom
-        # (the data comes from a separate IMU+leg-kinematics estimator),
-        # so it doesn't belong on this interface. Tracked in PR #2033
-        # review (separate PR).
-        return None
 
     def write_motor_commands(self, commands: list[MotorCommand]) -> bool: ...
 

@@ -35,7 +35,6 @@ from dimos.hardware.whole_body.spec import (
     MotorCommand,
     MotorState,
 )
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.simulation.engines.mujoco_shm import (
     ManipShmReader,
     shm_key_from_path,
@@ -177,13 +176,6 @@ class SimMujocoG1WholeBodyAdapter:
             accelerometer=accel,
             rpy=(roll, pitch, yaw),
         )
-
-    def read_odom(self) -> PoseStamped | None:
-        # MujocoSimModule publishes the floating-base pose on its own
-        # ``odom`` Out port (TBD); the adapter doesn't currently route
-        # odom through SHM.  Returning None matches the real-hw G1
-        # adapter behaviour (no onboard estimator → no odom).
-        return None
 
     def write_motor_commands(self, commands: list[MotorCommand]) -> bool:
         if not self._connected or self._shm is None:
