@@ -223,7 +223,7 @@ class G1ManipulationModule(PickAndPlaceModule):
         if not accepted:
             return "Error: coordinator rejected pointing trajectory"
 
-        if not self._wait_for_trajectory_completion(chosen_robot, timeout=5.0):
+        if not self._wait_for_trajectory_completion(chosen_robot, timeout=8.0):
             return "Error: pointing trajectory timed out"
 
         return f"Pointing {sol.side} arm at ({x:.2f}, {y:.2f}, {z:.2f})"
@@ -233,21 +233,49 @@ class G1ManipulationModule(PickAndPlaceModule):
         joint_names: list[str],
         q_start: np.ndarray,
         q_target: np.ndarray,
-        duration: float = 1.5,
-        n_waypoints: int = 5,
+        duration: float = 2.5,
+        n_waypoints: int = 9,
+        via_zero: bool = True,
     ) -> JointTrajectory:
-        """Cosine-smoothed JointTrajectory from q_start to q_target."""
-        points: list[TrajectoryPoint] = []
+        """Cosine-smoothed JointTrajectory from q_start to q_target.
+
+        With ``via_zero=True`` (default), the trajectory passes through
+        the all-zeros pose at the midpoint — a forced reset between
+        successive ``point_at`` calls so each pointing starts from the
+        same baseline. Without this, repeated point_at calls compound
+        residual joint errors.
+        """
+        if via_zero:
+            q_mid = np.zeros_like(q_start)
+            half_n = (n_waypoints + 1) // 2
+            half_dur = duration / 2.0
+            points: list[TrajectoryPoint] = []
+            # Phase 1: q_start -> 0 (cosine-smoothed)
+            for i in range(half_n):
+                s = i / (half_n - 1) if half_n > 1 else 0.0
+                alpha = 0.5 - 0.5 * float(np.cos(np.pi * s))
+                q = q_start + alpha * (q_mid - q_start)
+                points.append(TrajectoryPoint(positions=q.tolist(), time_from_start=s * half_dur))
+            # Phase 2: 0 -> q_target (cosine-smoothed); skip first point
+            # to avoid duplicating the zero waypoint at the seam.
+            for i in range(1, n_waypoints - half_n + 1):
+                s = i / (n_waypoints - half_n)
+                alpha = 0.5 - 0.5 * float(np.cos(np.pi * s))
+                q = q_mid + alpha * (q_target - q_mid)
+                points.append(
+                    TrajectoryPoint(
+                        positions=q.tolist(),
+                        time_from_start=half_dur + s * half_dur,
+                    )
+                )
+            return JointTrajectory(joint_names=list(joint_names), points=points)
+
+        points = []
         for i in range(n_waypoints):
             s = i / (n_waypoints - 1)
             alpha = 0.5 - 0.5 * float(np.cos(np.pi * s))
             q = q_start + alpha * (q_target - q_start)
-            points.append(
-                TrajectoryPoint(
-                    positions=q.tolist(),
-                    time_from_start=s * duration,
-                )
-            )
+            points.append(TrajectoryPoint(positions=q.tolist(), time_from_start=s * duration))
         return JointTrajectory(joint_names=list(joint_names), points=points)
 
     @skill

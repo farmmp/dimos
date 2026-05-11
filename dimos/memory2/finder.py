@@ -41,7 +41,7 @@ from reactivex.disposable import Disposable
 
 from dimos.agents.annotation import skill
 from dimos.core.core import rpc
-from dimos.core.stream import In
+from dimos.core.stream import In, Out
 from dimos.memory2.embed import EmbedImages
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.memory2.transform import QualityWindow
@@ -54,6 +54,7 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.visualization_msgs.BBoxMarkers import BBoxMarker, BBoxMarkers
 from dimos.perception.detection.type.detection3d.pointcloud import Detection3DPC
 from dimos.protocol.tf.tf import LCMTF
 from dimos.utils.logging_config import setup_logger
@@ -101,6 +102,16 @@ class ObjectFinder3D(Recorder):
     lidar: In[PointCloud2]
     odom: In[PoseStamped]
     camera_info: In[CameraInfo]
+    # Snapshot of the most recent find_object_3d result, for live
+    # overlay in viser. Each successful find replaces this snapshot
+    # so the visualizer always shows where we last looked.
+    found_objects: Out[BBoxMarkers]
+    # The subset of lidar points that ended up inside the bbox
+    # (i.e., the points whose centroid is the published bbox center).
+    # Visualizing this in viser tells you whether back-projection
+    # selected the right cluster or e.g. landed on a wall behind
+    # the actual object.
+    found_pointcloud: Out[PointCloud2]
     config: ObjectFinder3DConfig
 
     _embedder: EmbeddingModel | None = None
@@ -108,10 +119,17 @@ class ObjectFinder3D(Recorder):
     _embeddings: Any = None  # memory2.Stream[Image]; Any to avoid forward-ref evaluation
     _camera_info: CameraInfo | None = None
     _camera_info_lock: threading.Lock
+    # Accumulated bbox snapshot — each find_object_3d adds/updates one
+    # entry by label; previous entries persist so all found objects
+    # stay visible in viser at once. Use clear_found_objects() to reset.
+    _found: dict[str, BBoxMarker]
+    _found_lock: threading.Lock
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._camera_info_lock = threading.Lock()
+        self._found = {}
+        self._found_lock = threading.Lock()
 
     @rpc
     def start(self) -> None:
@@ -168,6 +186,14 @@ class ObjectFinder3D(Recorder):
     def _on_camera_info(self, msg: CameraInfo) -> None:
         with self._camera_info_lock:
             self._camera_info = msg
+
+    @skill
+    def clear_found_objects(self) -> str:
+        """Wipe the accumulated bbox snapshot in viser. Useful between tests."""
+        with self._found_lock:
+            self._found.clear()
+        self.found_objects.publish(BBoxMarkers(markers=[]))
+        return "Cleared all found-object bboxes."
 
     @skill
     def find_object_3d(self, label: str) -> str:
@@ -241,6 +267,20 @@ class ObjectFinder3D(Recorder):
                     translation=obs.pose_stamped.position,
                     rotation=obs.pose_stamped.orientation,
                 )
+                logger.warning(
+                    f"find_object_3d({label!r}): TF miss at ts={obs.ts:.2f} "
+                    f"frame={camera_frame!r} — fell back to pelvis"
+                )
+            else:
+                logger.info(
+                    f"find_object_3d({label!r}): TF hit at ts={obs.ts:.2f} "
+                    f"cam_world=({world_to_camera.translation.x:+.2f},"
+                    f"{world_to_camera.translation.y:+.2f},"
+                    f"{world_to_camera.translation.z:+.2f}) "
+                    f"pelvis=({obs.pose_stamped.position.x:+.2f},"
+                    f"{obs.pose_stamped.position.y:+.2f},"
+                    f"{obs.pose_stamped.position.z:+.2f})"
+                )
 
             for det in obs.data.detections:
                 n_dets += 1
@@ -253,6 +293,25 @@ class ObjectFinder3D(Recorder):
                 if det3d is None or len(det3d.pointcloud) == 0:
                     continue
                 p = det3d.center
+                # Publish the bbox so viser can draw it — this is the
+                # only signal that lets the user distinguish a
+                # perception/localization error from a pointing error.
+                ext = det3d.get_bounding_box_dimensions()
+                with self._found_lock:
+                    self._found[label] = BBoxMarker(
+                        label=label,
+                        center=(float(p.x), float(p.y), float(p.z)),
+                        extent=(float(ext[0]), float(ext[1]), float(ext[2])),
+                    )
+                    snapshot = list(self._found.values())
+                self.found_objects.publish(BBoxMarkers(markers=snapshot))
+                # Also publish the actual lidar subset that produced
+                # this centroid — visual debug for "did the back-
+                # projection select the right cluster?"
+                try:
+                    self.found_pointcloud.publish(det3d.pointcloud)
+                except Exception as e:
+                    logger.debug(f"found_pointcloud publish failed: {e}")
                 logger.info(f"find_object_3d('{label}') -> ({p.x:.3f}, {p.y:.3f}, {p.z:.3f})")
                 return f"Found '{label}' at ({p.x:.3f}, {p.y:.3f}, {p.z:.3f})"
 

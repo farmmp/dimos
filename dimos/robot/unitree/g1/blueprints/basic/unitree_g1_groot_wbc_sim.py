@@ -77,6 +77,7 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.std_msgs.Bool import Bool as DimosBool
+from dimos.msgs.visualization_msgs.BBoxMarkers import BBoxMarkers
 from dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector import (
     WavefrontFrontierExplorer,
 )
@@ -647,6 +648,12 @@ if _splat_path is not None and _splat_path.exists():
             # lidar) to dodge the (port_name, type) transport-map
             # collision with VoxelGridMapper.lidar.
             ("pointcloud_overlay", PointCloud2): LCMTransport("/global_map", PointCloud2),
+            # Found-object bbox overlay published by ObjectFinder3D.
+            # Toggle via "Show found objects" in the viser UI panel.
+            ("found_objects", BBoxMarkers): LCMTransport("/found_objects", BBoxMarkers),
+            # Lidar SUBSET that ObjectFinder3D's back-projection chose
+            # for the most recent find — magenta dots in viser.
+            ("found_pointcloud", PointCloud2): LCMTransport("/found_pointcloud", PointCloud2),
         },
     )
     # Camera publisher.  Splat wins on the *default* office bundle —
@@ -769,6 +776,8 @@ _g1_perception_stack = (
             ("color_image", Image): LCMTransport("/splat/color_image", Image),
             ("camera_info", CameraInfo): LCMTransport("/splat/camera_info", CameraInfo),
             ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+            ("found_objects", BBoxMarkers): LCMTransport("/found_objects", BBoxMarkers),
+            ("found_pointcloud", PointCloud2): LCMTransport("/found_pointcloud", PointCloud2),
         }
     ),
 )

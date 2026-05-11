@@ -42,6 +42,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.Path import Path as PathMsg
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.visualization_msgs.BBoxMarkers import BBoxMarkers
 from dimos.utils.logging_config import setup_logger
 from dimos.visualization.viser.camera import CameraSpec, g1_d435_default, world_pose
 from dimos.visualization.viser.robot_meshes import (
@@ -54,6 +55,12 @@ from dimos.visualization.viser.scene_editor import SceneEditor
 from dimos.visualization.viser.splat import SplatAlignment, load_splat
 
 logger = setup_logger()
+
+
+def _label_to_color(label: str) -> tuple[int, int, int]:
+    """Stable per-label color via name hash. Same label -> same color."""
+    h = hash(label) & 0xFFFFFF
+    return ((h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF)
 
 
 class ViserRenderModule(Module):
@@ -76,6 +83,17 @@ class ViserRenderModule(Module):
     # obstacle-memory overlay; /lidar (per-scan, transient) also works
     # if the latest sweep is what you want.
     pointcloud_overlay: In[PointCloud2]
+    # Second debug pointcloud overlay — meant for the SUBSET of points
+    # ObjectFinder3D back-projection picked for a given bbox. Drawn in
+    # a brighter color than `pointcloud_overlay` so the contrast tells
+    # you whether back-projection chose the right cluster.
+    found_pointcloud: In[PointCloud2]
+    # Optional debug overlay: 3D bboxes published by ObjectFinder3D
+    # (or any module) showing where the robot thinks an object is.
+    # Lets the human distinguish a perception/localization error
+    # ("box is not where the actual object is") from a downstream
+    # error ("arm aimed wrong even though the box is correct").
+    found_objects: In[BBoxMarkers]
     clicked_point: Out[PointStamped]
 
     def __init__(
@@ -151,6 +169,19 @@ class ViserRenderModule(Module):
         self._lidar_handle: Any = None
         self._lidar_visible: bool = True
         self._lidar_checkbox: Any = None
+        # Found-pointcloud (back-projection debug subset) overlay.
+        self._found_pc_handle: Any = None
+        self._found_pc_visible: bool = True
+        self._found_pc_checkbox: Any = None
+        # Found-object bbox overlay state. One handle pair (box + label)
+        # per object, keyed by sanitized label. Re-published snapshots
+        # replace previous handles in place; objects missing from a
+        # snapshot get their handles removed so the overlay matches the
+        # latest publication exactly.
+        self._found_objects_visible: bool = True
+        self._found_objects_checkbox: Any = None
+        self._found_box_handles: dict[str, Any] = {}
+        self._found_label_handles: dict[str, Any] = {}
 
     @rpc
     def start(self) -> None:
@@ -342,6 +373,32 @@ class ViserRenderModule(Module):
             if self._lidar_handle is not None:
                 self._lidar_handle.visible = self._lidar_visible
 
+        # Found-pointcloud overlay toggle.
+        self._found_pc_checkbox = self._server.gui.add_checkbox(
+            "Show found pointcloud", initial_value=self._found_pc_visible
+        )
+
+        @self._found_pc_checkbox.on_update
+        def _on_found_pc_toggle(_: Any) -> None:
+            self._found_pc_visible = bool(self._found_pc_checkbox.value)
+            if self._found_pc_handle is not None:
+                self._found_pc_handle.visible = self._found_pc_visible
+
+        # Found-objects overlay toggle (always present so users can see
+        # the toggle even before the finder publishes anything).
+        self._found_objects_checkbox = self._server.gui.add_checkbox(
+            "Show found objects", initial_value=self._found_objects_visible
+        )
+
+        @self._found_objects_checkbox.on_update
+        def _on_found_objects_toggle(_: Any) -> None:
+            self._found_objects_visible = bool(self._found_objects_checkbox.value)
+            for h in list(self._found_box_handles.values()) + list(
+                self._found_label_handles.values()
+            ):
+                if h is not None:
+                    h.visible = self._found_objects_visible
+
         # One frame per body; meshes are added as children so they
         # follow when the body frame moves.
         for body_id, body_name in enumerate(self._robot.body_names):
@@ -427,6 +484,18 @@ class ViserRenderModule(Module):
             self.register_disposable(Disposable(unsub))
         except Exception as e:
             logger.warning(f"Viser: lidar subscribe failed: {e}")
+
+        try:
+            unsub = self.found_pointcloud.subscribe(self._on_found_pointcloud)
+            self.register_disposable(Disposable(unsub))
+        except Exception as e:
+            logger.warning(f"Viser: found_pointcloud subscribe failed: {e}")
+
+        try:
+            unsub = self.found_objects.subscribe(self._on_found_objects)
+            self.register_disposable(Disposable(unsub))
+        except Exception as e:
+            logger.warning(f"Viser: found_objects subscribe failed: {e}")
 
         try:
             unsub = self.joint_state.subscribe(self._on_joint_state)
@@ -558,6 +627,80 @@ class ViserRenderModule(Module):
             self._lidar_handle.visible = self._lidar_visible
         except Exception as e:
             logger.debug(f"Viser lidar overlay update failed: {e}")
+
+    def _on_found_pointcloud(self, msg: PointCloud2) -> None:
+        """Overlay the lidar SUBSET that ObjectFinder3D back-projected
+        to compute its centroid. Bright magenta so it stands out
+        against the regular lidar overlay.
+        """
+        if not self._found_pc_visible or self._server is None:
+            return
+        try:
+            pcd = msg.pointcloud
+            pts = np.asarray(pcd.points, dtype=np.float32)
+            if pts.size == 0:
+                return
+            # Solid magenta — distinct from the height-mapped lidar
+            colors = np.tile(np.array([255, 0, 255], dtype=np.uint8), (len(pts), 1))
+            self._found_pc_handle = self._server.scene.add_point_cloud(
+                "/found_pointcloud", points=pts, colors=colors, point_size=0.04
+            )
+            self._found_pc_handle.visible = self._found_pc_visible
+        except Exception as e:
+            logger.debug(f"Viser found_pointcloud overlay update failed: {e}")
+
+    def _on_found_objects(self, msg: BBoxMarkers) -> None:
+        """Render labelled 3D boxes published by ObjectFinder3D.
+
+        Replaces existing handles in place via stable scene-tree paths;
+        boxes missing from a snapshot get their handles removed so the
+        overlay matches the latest publication exactly.
+        """
+        if self._server is None:
+            return
+
+        seen: set[str] = set()
+        for m in msg.markers:
+            node_id = "".join(c if c.isalnum() or c in "_-" else "_" for c in m.label)
+            seen.add(node_id)
+            color = _label_to_color(m.label)
+            box_path = f"/found_objects/{node_id}/box"
+            label_path = f"/found_objects/{node_id}/label"
+            try:
+                self._found_box_handles[node_id] = self._server.scene.add_box(
+                    box_path,
+                    color=color,
+                    dimensions=tuple(m.extent),
+                    wireframe=True,
+                    position=tuple(m.center),
+                    visible=self._found_objects_visible,
+                )
+                # Float the label slightly above the top of the box.
+                label_pos = (
+                    m.center[0],
+                    m.center[1],
+                    m.center[2] + max(m.extent[2] / 2.0, 0.0) + 0.1,
+                )
+                self._found_label_handles[node_id] = self._server.scene.add_label(
+                    label_path,
+                    text=m.label,
+                    position=label_pos,
+                    visible=self._found_objects_visible,
+                )
+            except Exception as e:
+                logger.debug(f"Viser found_objects update failed for {m.label!r}: {e}")
+
+        # Remove handles for boxes not in this snapshot.
+        for node_id in list(self._found_box_handles.keys()):
+            if node_id in seen:
+                continue
+            for d in (self._found_box_handles, self._found_label_handles):
+                h = d.pop(node_id, None)
+                if h is not None:
+                    try:
+                        h.remove()
+                    except Exception:
+                        pass
 
     def _on_joint_state(self, msg: JointState) -> None:
         names = list(msg.name)
