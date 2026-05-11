@@ -163,13 +163,35 @@ def _add_deno_to_path() -> None:
 
 
 def _find_local_cli() -> Path | None:
-    """Find local DimSim/dimos-cli/cli.ts for development."""
-    candidate = Path.home() / "repos" / "DimSim" / "dimos-cli" / "cli.ts"
-    if candidate.exists():
-        return candidate
-    repo_root = Path(__file__).resolve().parents[4]
-    candidate = repo_root / "DimSim" / "dimos-cli" / "cli.ts"
-    return candidate if candidate.exists() else None
+    """Find local DimSim/dimos-cli/cli.ts for development.
+
+    Checks ~/repos/DimSim and <dimos-repo-root>/../DimSim. If neither exists,
+    auto-clones jeff-hykin/DimSim into ~/repos/DimSim.
+    """
+    home_repo = Path.home() / "repos" / "DimSim"
+    home_cli = home_repo / "dimos-cli" / "cli.ts"
+    if home_cli.exists():
+        return home_cli
+
+    sibling_cli = Path(__file__).resolve().parents[4] / "DimSim" / "dimos-cli" / "cli.ts"
+    if sibling_cli.exists():
+        return sibling_cli
+
+    if not shutil.which("git"):
+        logger.error("git not found on PATH; cannot auto-clone DimSim")
+        return None
+
+    home_repo.parent.mkdir(parents=True, exist_ok=True)
+    url = f"https://github.com/{_GITHUB_REPO}.git"
+    logger.info(f"Cloning {_GITHUB_REPO} into {home_repo}")
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", url, str(home_repo)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        logger.error(f"git clone {url} failed: {result.stderr.strip()}")
+        return None
+    return home_cli if home_cli.exists() else None
 
 
 def _make_camera_info(fov_deg: int | None = None) -> CameraInfo:
