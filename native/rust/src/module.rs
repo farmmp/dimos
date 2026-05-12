@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use serde::de::DeserializeOwned;
@@ -231,46 +232,56 @@ impl<T: Transport> NativeModule<T> {
     /// Consumes the module — no new ports can be registered after this point.
     pub fn spawn(self) -> NativeModuleHandle {
         let NativeModule {
-            mut transport,
+            transport,
             routes,
             mut publish_rx,
             ..
         } = self;
+        let transport = Arc::new(transport);
 
-        let handle = tokio::spawn(async move {
+        let recv_transport = Arc::clone(&transport);
+        let receiver = tokio::spawn(async move {
             loop {
-                tokio::select! {
-                    result = transport.recv() => match result {
-                        Ok((channel, data)) => {
-                            for route in &routes {
-                                if route.topic() == channel {
-                                    route.try_dispatch(&data);
-                                }
+                match recv_transport.recv().await {
+                    Ok((channel, data)) => {
+                        for route in &routes {
+                            if route.topic() == channel {
+                                route.try_dispatch(&data);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("dimos_module: recv error: {e}");
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        }
-                    },
-                    Some((topic, data)) = publish_rx.recv() => {
-                        if let Err(e) = transport.publish(&topic, &data).await {
-                            eprintln!("dimos_module: publish error on {topic}: {e}");
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("dimos_module: recv error: {e}");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                 }
             }
         });
 
-        NativeModuleHandle(handle)
+        let pub_transport = Arc::clone(&transport);
+        let publisher = tokio::spawn(async move {
+            while let Some((topic, data)) = publish_rx.recv().await {
+                if let Err(e) = pub_transport.publish(&topic, &data).await {
+                    eprintln!("dimos_module: publish error on {topic}: {e}");
+                }
+            }
+        });
+
+        NativeModuleHandle { receiver, publisher }
     }
 }
 
-pub struct NativeModuleHandle(tokio::task::JoinHandle<()>);
+pub struct NativeModuleHandle {
+    receiver: tokio::task::JoinHandle<()>,
+    publisher: tokio::task::JoinHandle<()>,
+}
 
 impl NativeModuleHandle {
     pub async fn join(self) -> Result<(), tokio::task::JoinError> {
-        self.0.await
+        tokio::select! {
+            r = self.receiver  => r,
+            r = self.publisher => r,
+        }
     }
 }
 
@@ -290,7 +301,7 @@ mod tests {
         async fn publish(&self, _channel: &str, _data: &[u8]) -> io::Result<()> {
             Ok(())
         }
-        async fn recv(&mut self) -> io::Result<(String, Vec<u8>)> {
+        async fn recv(&self) -> io::Result<(String, Vec<u8>)> {
             std::future::pending().await
         }
     }
@@ -333,7 +344,7 @@ mod tests {
             Ok(())
         }
 
-        async fn recv(&mut self) -> io::Result<(String, Vec<u8>)> {
+        async fn recv(&self) -> io::Result<(String, Vec<u8>)> {
             loop {
                 let popped = self.inbound.lock().unwrap().pop_front();
                 if let Some(msg) = popped {

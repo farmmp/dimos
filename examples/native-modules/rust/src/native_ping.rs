@@ -33,7 +33,7 @@ async fn main() {
                 seq += 1;
             }
             Some(echo) = confirm.recv() => {
-                eprintln!("ping: echo received (seq={}, sample_config={})", echo.linear.x as u64, echo.angular.z as i64);
+                println!("ping: echo received (seq={}, sample_config={})", echo.linear.x as u64, echo.angular.z as i64);
             }
         }
     }
