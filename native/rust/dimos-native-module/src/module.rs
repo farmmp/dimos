@@ -14,7 +14,6 @@ const PUBLISH_CHANNEL_CAPACITY: usize = 64;
 // Each input() call produces a TypedRoute that decodes its message type
 // and forwards it to the right Input's mpsc channel.
 pub(crate) trait Route: Send {
-    fn topic(&self) -> &str;
     fn try_dispatch(&self, data: &[u8]);
 }
 
@@ -25,10 +24,6 @@ struct TypedRoute<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> Route for TypedRoute<T> {
-    fn topic(&self) -> &str {
-        &self.topic
-    }
-
     fn try_dispatch(&self, data: &[u8]) {
         match (self.decode)(data) {
             // If the input channel is full, the newest message is dropped.
@@ -116,7 +111,7 @@ pub trait Module: Sized + Send + 'static {
 
 pub struct Builder {
     topics: HashMap<String, String>,
-    routes: Vec<Box<dyn Route>>,
+    routes: HashMap<String, Vec<Box<dyn Route>>>,
     publish_tx: mpsc::Sender<(String, Vec<u8>)>,
 }
 
@@ -127,7 +122,7 @@ impl Builder {
     ) -> Self {
         Self {
             topics,
-            routes: Vec::new(),
+            routes: HashMap::new(),
             publish_tx,
         }
     }
@@ -146,11 +141,14 @@ impl Builder {
     ) -> Input<T> {
         let topic = self.topic_for(port);
         let (tx, rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        self.routes.push(Box::new(TypedRoute {
-            topic: topic.clone(),
-            decode,
-            sender: tx,
-        }));
+        self.routes
+            .entry(topic.clone())
+            .or_default()
+            .push(Box::new(TypedRoute {
+                topic: topic.clone(),
+                decode,
+                sender: tx,
+            }));
         Input {
             topic,
             receiver: rx,
@@ -168,7 +166,7 @@ impl Builder {
 
 pub(crate) fn spawn_pubsub_tasks<T: Transport>(
     transport: T,
-    routes: Vec<Box<dyn Route>>,
+    routes: HashMap<String, Vec<Box<dyn Route>>>,
     mut publish_rx: mpsc::Receiver<(String, Vec<u8>)>,
 ) {
     let transport = Arc::new(transport);
@@ -178,8 +176,8 @@ pub(crate) fn spawn_pubsub_tasks<T: Transport>(
         loop {
             match recv_transport.recv().await {
                 Ok((channel, data)) => {
-                    for route in &routes {
-                        if route.topic() == channel {
+                    if let Some(rs) = routes.get(&channel) {
+                        for route in rs {
                             route.try_dispatch(&data);
                         }
                     }
