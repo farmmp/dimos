@@ -644,7 +644,7 @@ class G1GrootWBCTask(BaseControlTask):
         A ramp of 0 arms immediately with no interpolation (what sim
         uses — the subprocess already holds the MJCF's default pose).
 
-        Safe to call redundantly; subsequent calls while already armed
+        Safe to call redundantly; calls while already armed or arming
         are ignored.  No-op if the task is not ``_active``.
         """
         if not self._active:
@@ -652,6 +652,9 @@ class G1GrootWBCTask(BaseControlTask):
             return False
         if self._armed:
             logger.info(f"G1GrootWBCTask '{self._name}' already armed — arm() ignored")
+            return False
+        if self._arming or self._arm_pending:
+            logger.info(f"G1GrootWBCTask '{self._name}' arm in progress -- arm() ignored")
             return False
         ramp = ramp_seconds if ramp_seconds is not None else self._config.default_ramp_seconds
         self._arming_duration = max(0.0, float(ramp))

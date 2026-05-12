@@ -171,6 +171,12 @@ class WebsocketVisModule(Module):
         self._broadcast_thread = threading.Thread(target=websocket_vis_loop, daemon=True)  # type: ignore[assignment]
         self._broadcast_thread.start()  # type: ignore[attr-defined]
 
+    def _uses_rerun_web(self) -> bool:
+        rerun_open = getattr(self.config.g, "rerun_open", "native")
+        return self.config.g.viewer == "rerun-web" or (
+            self.config.g.viewer == "rerun" and rerun_open in ("web", "both")
+        )
+
     @rpc
     def start(self) -> None:
         super().start()
@@ -183,7 +189,7 @@ class WebsocketVisModule(Module):
         self._uvicorn_server_thread.start()
 
         # Only auto-open when the user chose web-based viewing.
-        if self.config.g.viewer == "rerun" and self.config.g.rerun_open in ("web", "both"):
+        if self._uses_rerun_web():
             url = f"http://localhost:{self.config.port}/"
             logger.info(f"Dimensional Command Center: {url}")
 
@@ -259,9 +265,7 @@ class WebsocketVisModule(Module):
 
         async def serve_index(request):  # type: ignore[no-untyped-def]
             """Serve appropriate HTML based on viewer mode."""
-            if not (
-                self.config.g.viewer == "rerun" and self.config.g.rerun_open in ("web", "both")
-            ):
+            if not self._uses_rerun_web():
                 return RedirectResponse(url="/command-center")
             return FileResponse(_DASHBOARD_HTML, media_type="text/html")
 

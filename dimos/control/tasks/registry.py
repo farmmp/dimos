@@ -51,7 +51,6 @@ class ControlTaskRegistry:
             "cartesian_ik": "dimos.control.tasks.cartesian_ik_task:create_task",
             "teleop_ik": "dimos.control.tasks.teleop_task:create_task",
             "g1_groot_wbc": "dimos.control.tasks.g1_groot_wbc_task:create_task",
-            "groot_wbc": "dimos.control.tasks.g1_groot_wbc_task:create_task",
         }
         self._factories: dict[str, TaskFactory] = {}
 

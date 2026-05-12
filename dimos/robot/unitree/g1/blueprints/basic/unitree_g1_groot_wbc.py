@@ -170,9 +170,7 @@ _coordinator = ControlCoordinator.blueprint(
         # harmless when the sim engine doesn't expose those ports.
         ("motor_states", JointState): LCMTransport("/g1/motor_states", JointState),
         ("imu", Imu): LCMTransport("/g1/imu", Imu),
-        ("motor_command", MotorCommandArray): LCMTransport(
-            "/g1/motor_command", MotorCommandArray
-        ),
+        ("motor_command", MotorCommandArray): LCMTransport("/g1/motor_command", MotorCommandArray),
     }
 )
 
@@ -180,7 +178,7 @@ _coordinator = ControlCoordinator.blueprint(
 # buttons call ControlCoordinator.set_activated() / .set_dry_run()
 # directly via RPC (no LCM round-trip).
 _ws_vis = WebsocketVisModule.blueprint().transports(
-    {("cmd_vel", Twist): LCMTransport("/g1/cmd_vel", Twist)}
+    {("tele_cmd_vel", Twist): LCMTransport("/g1/cmd_vel", Twist)}
 )
 
 unitree_g1_groot_wbc = autoconnect(_backend, _coordinator, _ws_vis)

@@ -411,6 +411,14 @@ class MujocoSimModule(
             cmd.append("--no-asset-inject")
 
         self._engine_proc = subprocess.Popen(cmd)
+        time.sleep(0.2)
+        returncode = self._engine_proc.poll()
+        if returncode is not None:
+            self._engine_proc = None
+            raise RuntimeError(
+                "MujocoSimModule engine subprocess exited immediately "
+                f"(returncode={returncode}, address={self.config.address})"
+            )
         logger.info(
             "MujocoSimModule spawned engine subprocess",
             pid=self._engine_proc.pid,
@@ -418,9 +426,8 @@ class MujocoSimModule(
             address=self.config.address,
             shm_key=shm_key,
         )
-        # The dimos-side adapter polls SHM readiness itself; we don't
-        # block start() on it. If the subprocess dies before signalling
-        # ready, the adapter's connect() times out and surfaces an error.
+        # The dimos-side adapter polls SHM readiness; start() only catches
+        # immediate spawn failures here.
 
     @rpc
     def stop(self) -> None:
