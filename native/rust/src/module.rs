@@ -278,6 +278,11 @@ impl NativeModuleHandle {
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::sync::Notify;
 
     struct MockTransport;
 
@@ -288,6 +293,70 @@ mod tests {
         async fn recv(&mut self) -> io::Result<(String, Vec<u8>)> {
             std::future::pending().await
         }
+    }
+
+    /// Mock transport for testing message timing
+    ///
+    /// Let's us test for concurrency and blocking when handling different messages.
+    struct ControllableMockTransport {
+        inbound: Arc<Mutex<VecDeque<(String, Vec<u8>)>>>,
+        inbound_notify: Arc<Notify>,
+        publish_delay_ms: Arc<AtomicU64>,
+        publish_entered: Arc<Notify>,
+        recv_returned: Arc<Notify>,
+        recv_log: Arc<Mutex<Vec<Instant>>>,
+        publish_log: Arc<Mutex<Vec<Instant>>>,
+    }
+
+    impl ControllableMockTransport {
+        fn new() -> Self {
+            Self {
+                inbound: Arc::new(Mutex::new(VecDeque::new())),
+                inbound_notify: Arc::new(Notify::new()),
+                publish_delay_ms: Arc::new(AtomicU64::new(0)),
+                publish_entered: Arc::new(Notify::new()),
+                recv_returned: Arc::new(Notify::new()),
+                recv_log: Arc::new(Mutex::new(Vec::new())),
+                publish_log: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl crate::transport::Transport for ControllableMockTransport {
+        async fn publish(&self, _channel: &str, _data: &[u8]) -> io::Result<()> {
+            self.publish_entered.notify_one();
+            let delay = self.publish_delay_ms.load(Ordering::Relaxed);
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            self.publish_log.lock().unwrap().push(Instant::now());
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> io::Result<(String, Vec<u8>)> {
+            loop {
+                let popped = self.inbound.lock().unwrap().pop_front();
+                if let Some(msg) = popped {
+                    self.recv_log.lock().unwrap().push(Instant::now());
+                    self.recv_returned.notify_one();
+                    return Ok(msg);
+                }
+                self.inbound_notify.notified().await;
+            }
+        }
+    }
+
+    fn inject_inbound(
+        inbound: &Mutex<VecDeque<(String, Vec<u8>)>>,
+        notify: &Notify,
+        channel: &str,
+        data: Vec<u8>,
+    ) {
+        inbound
+            .lock()
+            .unwrap()
+            .push_back((channel.to_string(), data));
+        notify.notify_one();
     }
 
     #[derive(Debug, Deserialize, Default, PartialEq)]
@@ -412,5 +481,92 @@ mod tests {
         module.map_topic("cmd_vel", "/robot/cmd_vel");
         let output = module.output("cmd_vel", |b: &Vec<u8>| b.clone());
         assert_eq!(output.topic, "/robot/cmd_vel");
+    }
+
+    // Make sure we can publish and receive messages at the same time.
+    // Slow processing on either of the directions should not block the other.
+    // i.e. follow this sequence of events: 1) publish 2) receive
+    // if the publish takes a long time, we should receive the message even while publishing the other.
+    // The other direction should hold as well: long receiving should not prevent messages from being published
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_publish_does_not_block_recv() {
+        let transport = ControllableMockTransport::new();
+        let recv_log = transport.recv_log.clone();
+        let inbound = transport.inbound.clone();
+        let inbound_notify = transport.inbound_notify.clone();
+        let publish_delay_ms = transport.publish_delay_ms.clone();
+        let publish_entered = transport.publish_entered.clone();
+
+        // set publishing to take 200ms
+        publish_delay_ms.store(200, Ordering::Relaxed);
+
+        let mut module = NativeModule::new(transport);
+        module.map_topic("data", "/data");
+        module.map_topic("out", "/out");
+        let _input = module.input::<Vec<u8>>("data", |b| Ok(b.to_vec()));
+        let output = module.output::<Vec<u8>>("out", |b: &Vec<u8>| b.clone());
+        let _handle = module.spawn();
+
+        // start the 200ms publish
+        output.publish(&vec![0u8]).await.ok();
+
+        // ensure the publish starts getting handled before the receive
+        tokio::time::timeout(Duration::from_secs(1), publish_entered.notified())
+            .await
+            .expect("dispatch task should pick up publish_rx within 1s");
+
+        inject_inbound(&inbound, &inbound_notify, "/data", vec![42u8]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let recv_count = recv_log.lock().unwrap().len();
+        assert!(
+            recv_count >= 1,
+            "expected recv to fire during slow publish; got {recv_count} events. \
+             The recv path should be independent of publish latency."
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_recv_dispatch_does_not_block_publish() {
+        let transport = ControllableMockTransport::new();
+        let publish_log = transport.publish_log.clone();
+        let inbound = transport.inbound.clone();
+        let inbound_notify = transport.inbound_notify.clone();
+        let recv_returned = transport.recv_returned.clone();
+
+        let mut module = NativeModule::new(transport);
+        module.map_topic("slow", "/slow");
+        module.map_topic("out", "/out");
+
+        // simulate slow processing function in a receive
+        let _input = module.input::<Vec<u8>>("slow", |b| {
+            std::thread::sleep(Duration::from_millis(200));
+            Ok(b.to_vec())
+        });
+        let output = module.output::<Vec<u8>>("out", |b: &Vec<u8>| b.clone());
+        let _handle = module.spawn();
+
+        // send a message to the receiving
+        inject_inbound(&inbound, &inbound_notify, "/slow", vec![1u8]);
+
+        // make sure the receive gets picked up before we publish
+        tokio::time::timeout(Duration::from_secs(1), recv_returned.notified())
+            .await
+            .expect("dispatch task should pick up inbound within 1s");
+
+        output.publish(&vec![42u8]).await.ok();
+
+        // receive should still be processing, but publish should go through by now
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let publish_count = publish_log.lock().unwrap().len();
+        assert!(
+            publish_count >= 1,
+            "expected publish to fire during slow recv dispatch; got \
+             {publish_count} events. The publish path should be independent \
+             of recv-side CPU work."
+        );
     }
 }
