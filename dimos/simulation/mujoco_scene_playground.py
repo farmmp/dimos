@@ -42,6 +42,13 @@ def _env_float(name: str, default: float) -> float:
     return default if raw is None or raw == "" else float(raw)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _env_xyz(name: str, default: tuple[float, float, float]) -> tuple[float, float, float]:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -135,7 +142,7 @@ mujoco_scene_playground = autoconnect(
     MujocoSimModule.blueprint(
         address=_sim_mjcf_path,
         meshdir=_mjcf_meshdir,
-        headless=True,
+        headless=_env_bool("DIMOS_MUJOCO_HEADLESS", True),
         dof=_dof,
         camera_name=os.environ.get("DIMOS_MUJOCO_CAMERA", "head_color"),
         enable_color=False,
