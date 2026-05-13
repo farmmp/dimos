@@ -120,10 +120,10 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         .filter(|f| matches!(f.kind, FieldKind::Input { .. }))
         .collect();
 
-    let dispatch_body = if input_fields.is_empty() {
+    let handle_body = if input_fields.is_empty() {
         quote!(::std::future::pending::<()>().await)
     } else {
-        let dispatch_arms = input_fields.iter().map(|f| {
+        let handle_arms = input_fields.iter().map(|f| {
             let FieldKind::Input { handler, .. } = &f.kind else {
                 unreachable!()
             };
@@ -137,7 +137,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         quote! {
             loop {
                 ::tokio::select! {
-                    #(#dispatch_arms,)*
+                    #(#handle_arms,)*
                     else => break,
                 }
             }
@@ -175,8 +175,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             #setup_impl
 
-            async fn dispatch(&mut self) {
-                #dispatch_body
+            async fn handle(&mut self) {
+                #handle_body
             }
 
             #teardown_impl

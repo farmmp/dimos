@@ -102,7 +102,7 @@ pub trait Module: Sized + Send + 'static {
         async {}
     }
 
-    fn dispatch(&mut self) -> impl std::future::Future<Output = ()> + Send;
+    fn handle(&mut self) -> impl std::future::Future<Output = ()> + Send;
 
     fn teardown(&mut self) -> impl std::future::Future<Output = ()> + Send {
         async {}
@@ -227,7 +227,7 @@ where
     module.setup().await;
 
     tokio::select! {
-        _ = module.dispatch() => {}
+        _ = module.handle() => {}
         _ = tokio::signal::ctrl_c() => {}
     }
 
