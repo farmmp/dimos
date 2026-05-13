@@ -33,7 +33,6 @@ from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path as PathMsg
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 
@@ -159,7 +158,6 @@ g1_groot_wbc = autoconnect(
         not in {"", "0"},
         enable_kinematic_joint_hold=_env_bool("DIMOS_MUJOCO_KINEMATIC_JOINT_HOLD", True),
     ),
-    MovementManager.blueprint(),
     VoxelGridMapper.blueprint(
         voxel_size=_env_float("DIMOS_GLOBAL_MAP_VOXEL_SIZE", 0.05),
     ),
@@ -170,8 +168,8 @@ g1_groot_wbc = autoconnect(
     {
         ("joint_state", JointState): LCMTransport("/mujoco/joint_state", JointState),
         ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-        ("tele_cmd_vel", Twist): LCMTransport("/tele_cmd_vel", Twist),
-        ("nav_cmd_vel", Twist): LCMTransport("/nav_cmd_vel", Twist),
+        ("tele_cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
+        ("nav_cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
         ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
         ("pointcloud", PointCloud2): LCMTransport("/lidar", PointCloud2),
         ("lidar", PointCloud2): LCMTransport("/lidar", PointCloud2),
