@@ -67,16 +67,15 @@ def follow_points(lcm_spy: LcmSpy):
 
 
 @pytest.fixture
-def start_blueprint() -> Iterator[Callable[..., DimosCliCall]]:
+def start_blueprint(mcp_port: int) -> Iterator[Callable[..., DimosCliCall]]:
     dimos_robot_call = DimosCliCall()
+    dimos_robot_call.mcp_port = mcp_port
 
     def set_name_and_start(
         *demo_args: str,
-        mcp_port: int | None = None,
         simulator: str | None = None,
     ) -> DimosCliCall:
         dimos_robot_call.demo_args = list(demo_args)
-        dimos_robot_call.mcp_port = mcp_port
         if simulator is not None:
             dimos_robot_call.simulator = simulator
         dimos_robot_call.start()
