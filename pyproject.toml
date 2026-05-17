@@ -91,7 +91,8 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
-addopts = "--cov=dimos --cov-report=term-missing --cov-report=xml"
+# Removed --cov-report=xml locally since I don't use CI coverage uploads
+addopts = "--cov=dimos --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["dimos"]
