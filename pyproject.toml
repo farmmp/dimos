@@ -92,7 +92,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 # Removed --cov-report=xml locally since I don't use CI coverage uploads
-addopts = "--cov=dimos --cov-report=term-missing"
+# Also disabled coverage entirely for faster local test runs; enable with --cov manually
+addopts = "-v"
 
 [tool.coverage.run]
 source = ["dimos"]
